@@ -30,8 +30,13 @@ dateTimeHandler
 os
 dataHandler
 tableHandler
+regressionHandler
 SchemaVersions.py
 ```
+
+`regressionHandler` adds regression / surrogate modelling (1D to N-D,
+self-implemented numerics on numpy) as a toolBaseSecured service; see
+[regressionHandler/README.md](regressionHandler/README.md).
 
 Domain packages such as aerospace, world models, CAD, agents, and application
 services are intentionally not included.

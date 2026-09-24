@@ -77,6 +77,15 @@ packages = [
   "pythonLibs.fileHandler",
   "pythonLibs.jsonHandler",
   "pythonLibs.os",
+  "pythonLibs.regressionHandler",
+  "pythonLibs.regressionHandler.core",
+  "pythonLibs.regressionHandler.numerics",
+  "pythonLibs.regressionHandler.bases",
+  "pythonLibs.regressionHandler.kernels",
+  "pythonLibs.regressionHandler.models",
+  "pythonLibs.regressionHandler.evaluation",
+  "pythonLibs.regressionHandler.sampling",
+  "pythonLibs.regressionHandler.solvers",
   "pythonLibs.tableHandler",
   "pythonLibs.tomlHandler",
   "pythonLibs.tool",
@@ -94,6 +103,15 @@ pythonLibs = "."
 "pythonLibs.fileHandler" = "fileHandler"
 "pythonLibs.jsonHandler" = "jsonHandler"
 "pythonLibs.os" = "os"
+"pythonLibs.regressionHandler" = "regressionHandler"
+"pythonLibs.regressionHandler.core" = "regressionHandler/core"
+"pythonLibs.regressionHandler.numerics" = "regressionHandler/numerics"
+"pythonLibs.regressionHandler.bases" = "regressionHandler/bases"
+"pythonLibs.regressionHandler.kernels" = "regressionHandler/kernels"
+"pythonLibs.regressionHandler.models" = "regressionHandler/models"
+"pythonLibs.regressionHandler.evaluation" = "regressionHandler/evaluation"
+"pythonLibs.regressionHandler.sampling" = "regressionHandler/sampling"
+"pythonLibs.regressionHandler.solvers" = "regressionHandler/solvers"
 "pythonLibs.tableHandler" = "tableHandler"
 "pythonLibs.tomlHandler" = "tomlHandler"
 "pythonLibs.tool" = "tool"
