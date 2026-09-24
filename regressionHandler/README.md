@@ -20,20 +20,25 @@ Design principles:
 regressionHandler/
   RegressionHandler.py   toolBaseSecured service (@secure_expose commands)
   core/                  SurrogateModelBase, OptionsDictionary, Registry, FitResult, FitMetrics, SafeExpression
-  numerics/              SpecialFunctions, Distributions, LinearAlgebra, Optimizers, PLS, NeighborSearch
+  numerics/              SpecialFunctions, Distributions, LinearAlgebra, Optimizers, PLS, NeighborSearch,
+                         Trees (histogram trees)
+  glm/                   exponential families, links, penalized IRLS, GCV / UBRE smoothing selection
   bases/                 polynomial, orthogonalPolynomial, radial, bspline, expression, combined
-  solvers/               ols, ridge (GCV/LOO), elasticNet, robust (IRLS)
+  solvers/               ols, ridge (GCV/LOO), elasticNet, robust (IRLS), lars (sparse, LOO-selected)
   kernels/               squaredExponential, matern (any nu, fixed or estimated), matern32/52,
                          absoluteExponential, wendland, spherical, powerExponential,
                          rationalQuadratic, periodic, gneiting (space-time), warped / nonstationary,
                          sum/product with per-child columns (analytic gradients, ARD / PLS,
                          full anisotropy, fixed anisotropy matrix, great-circle distance)
-  models/                LinearBasisModel, KrigingModel (KPLS), CokrigingModel, ScalableKrigingModel,
-                         RbfModel, IdwModel, NonlinearModel,
-                         ModelLibrary, SplineModel, LocalRegressionModel (LOESS), ModelFactory
+  models/                LinearBasisModel, GlmModel, GamModel, QuantileModel, BayesianLinearModel,
+                         HeteroscedasticModel, TransformedTargetModel, MixedModel, NonlinearModel, OdrModel,
+                         KrigingModel (KPLS), CokrigingModel, ScalableKrigingModel, MultiFidelityKrigingModel,
+                         GradientKrigingModel, RbfModel, IdwModel, SplineModel, ShapeSplineModel,
+                         IsotonicModel, LocalRegressionModel (LOESS), RandomForestModel,
+                         GradientBoostingModel, NeuralNetworkModel, ModelLibrary, ModelFactory
   evaluation/            crossValidate (k-fold, threaded, analytic LOO), ModelSelector / defaultCandidates,
                          tuneHyperparameters, stepwiseSelect, diagnose, bootstrap, modelReport,
-                         empiricalVariogram / fitVariogram
+                         empiricalVariogram / fitVariogram, sobolIndices (PCE exact / Monte Carlo)
   sampling/              latinHypercube (maximin / ESE), fullFactorial, randomSampling, sobolLike,
                          benchmark problems (branin, rosenbrock, sphere, ackley, hartmann3/6, ishigami, friedman)
   tests/
@@ -68,7 +73,8 @@ LinearBasisModel(basis={"type": "polynomial", "degree": 2}, solver={"type": "rob
 
 Shorthands: `linear`, `quadratic`, `poly<N>`, `ortho<N>`, `ridge-poly<N>`,
 `robust-poly<N>`, `lasso-poly<N>`, `pspline`, `rbf-ridge`, `gp`, `rbf-smooth`, `tps`,
-plus the registered types `linearBasis`, `kriging`, `kpls`, `rbf`, `idw`.
+`pce<N>`, `logistic-regression`, `poisson-regression`, `median`, plus every registered
+type name (`glm`, `gam`, `quantile`, `randomForest`, ...).
 
 ## Models
 
@@ -84,6 +90,21 @@ plus the registered types `linearBasis`, `kriging`, `kpls`, `rbf`, `idw`.
 | `nonlinear` | nonlinear least squares | N-D | yes (delta method) | safe expressions or callables, robust losses, bounds, multi-start |
 | `spline` | penalized B-splines | 1-3 D | yes | P-spline, GCV / LOO smoothing |
 | `loess` | local polynomial regression | N-D | yes (equivalent kernel) | local polynomial degree 0-2, robustness iterations |
+| `glm` | generalized linear model | N-D | yes (link scale, delta) | gaussian, binomial, poisson, gamma, inverse Gaussian, negative binomial (theta ML), tweedie; any link; offsets; penalties |
+| `gam` | generalized additive model | N-D | yes (Bayesian) | P-spline, tensor, linear, factor and random terms; GCV / UBRE; partial effects; any family |
+| `quantile` | linear quantile regression | N-D | yes (confidence) | exact interior-point LP; nid / iid / kernel / bootstrap errors; any basis |
+| `bayesLinear` | Bayesian linear regression | N-D | yes | evidence-maximized ridge or ARD (sparse) prior |
+| `heteroscedastic` | mean + log-variance model | N-D | yes | joint ML; input-dependent prediction intervals |
+| `transformedTarget` | any model on T(y) | N-D | yes | Box-Cox / Yeo-Johnson (profile ML) / log; median or smearing back-transform |
+| `mixed` | linear mixed model | N-D | yes | random intercepts and slopes per group; REML / ML; BLUPs |
+| `odr` | orthogonal distance regression | N-D | yes | errors in x and y; Deming regression as a special case |
+| `multiFidelity` | recursive multi-fidelity Kriging | N-D | yes | any number of fidelity levels, non-nested designs |
+| `gek` | gradient-enhanced Kriging | N-D | yes | values and (partial) gradients as observations |
+| `shapeSpline` | shape-constrained P-spline | 1-D | no | exactly monotone and / or convex |
+| `isotonic` | isotonic regression | 1-D | no | pool-adjacent-violators |
+| `randomForest` | random forest | N-D | yes (infinitesimal jackknife) | out-of-bag error, feature importance |
+| `gradientBoosting` | gradient-boosted trees | N-D | no | squared / absolute / huber / quantile loss, early stopping |
+| `neuralNetwork` | multilayer perceptron | N-D | yes (deep ensemble) | L-BFGS or Adam, exact input gradients, multi-output |
 
 ### Model form library
 
@@ -174,6 +195,24 @@ ScalableKrigingModel(approximation="fitc", nInducing=300).fit(xLarge, yLarge)
   batched conditionals (O(n m^3)); the optimizer starts from an exact fit on a
   subsample. With all neighbours (or all points inducing) it equals exact Kriging
 
+### Statistical models
+
+```python
+from pythonLibs.regressionHandler import (GlmModel, GamModel, QuantileModel, MixedModel, OdrModel,
+                                          TransformedTargetModel, createModel)
+from pythonLibs.regressionHandler.evaluation import sobolIndices
+
+GlmModel(family="poisson", offsetColumn=2).fit(x, counts).glmSummary()     # deviance, AIC, dispersion
+GlmModel(family="binomial").fit(x, y01).predictInterval(xNew)              # intervals stay in [0, 1]
+GamModel(terms=[{"type": "smooth", "column": 0}, {"type": "tensor", "columns": [1, 2]},
+                {"type": "factor", "column": 3}], family="gamma").fit(x, y).termTable()
+QuantileModel(tau=0.9, basis={"type": "bspline", "nSegments": 8}).fit(x, y)
+MixedModel(groupColumn=2, randomSlopes=[0]).fit(x, y).varianceComponents()
+OdrModel(expression="a*exp(-b*x)", params=["a", "b"], xSigma=0.1, ySigma=0.05).fit(x, y)
+TransformedTargetModel(model="gp", transform="boxcox").fit(x, y)
+createModel("pce8").fit(x, y); sobolIndices(_)                             # sparse PCE + exact Sobol indices
+```
+
 ## Selection, diagnostics and uncertainty
 
 ```python
@@ -236,7 +275,14 @@ python -m pytest regressionHandler/tests -q
   simulation moments, the thin-plate spline GCV, exact LOO against refits,
   variogram estimators against brute force, block prediction, space-time and
   non-stationary kernel closed forms, cokriging reducing to Kriging, and
-  Vecchia / FITC reducing to exact Kriging.
+  Vecchia / FITC reducing to exact Kriging; GLM score equations and Fisher
+  information, GAM penalized least squares / GCV / edf, quantile regression
+  against brute force and its equivariances, multi-fidelity and gradient
+  Kriging identities, LARS on orthogonal designs, exact PCE Sobol indices,
+  Deming regression, ML stationarity of the variance model, Box-Cox profile
+  optimality, exhaustive tree splits, MLP back-propagation, mixed-model dense
+  formulas, NNLS / constrained least-squares KKT conditions and the Bayesian
+  evidence fixed point.
 - the other files test workflows, persistence, model selection and the
   toolBase service.
 
