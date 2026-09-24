@@ -39,7 +39,7 @@ SchemaVersions.py
 self-implemented numerics on numpy) as a toolBaseSecured service; see
 [regressionHandler/README.md](regressionHandler/README.md).
 
-`fieldMapping` transfers fields between non-matching meshes while conserving
+`fieldMapping` transfers field data between non-matching meshes while conserving
 their integrals (VTU with arbitrary polyhedra, finite-element integration,
 conservative sign-preserving surface flux transfer); see
 [fieldMapping/README.md](fieldMapping/README.md).

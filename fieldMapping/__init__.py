@@ -1,4 +1,4 @@
-"""fieldMapping: conservative transfer of fields between non-matching meshes.
+"""fieldMapping: conservative transfer of field data between non-matching meshes.
 
 - VTU / PVD input and output with arbitrary polyhedra (numpy + standard library)
 - finite-element integration on any VTK cell (linear, quadratic, polygon, polyhedron)

@@ -19,7 +19,7 @@ are integrated exactly on their curved geometry). A polygon is split into
 triangles (centroid, v_i, v_i+1) and a polyhedron into tetrahedra
 (cell centroid, face centroid, v_i, v_i+1); the field is linear on each piece,
 with the centroid values taken as vertex averages (the standard polyhedral
-interpolation). This reproduces linear fields exactly and gives the exact
+interpolation). This reproduces any linear field exactly and gives the exact
 measure of any polyhedron with planar faces.
 """
 from __future__ import annotations

@@ -90,7 +90,7 @@ def test_convergenceUnderJointRefinement():
         area = tgt.cellMeasures()
         errs.append(np.sqrt(np.sum(area * (res.cellFlux - exact) ** 2)))
     rates = np.log2(np.array(errs[:-1]) / np.array(errs[1:]))
-    assert np.all(rates > 1.7), rates                                           # second order for smooth fields
+    assert np.all(rates > 1.7), rates                                           # second order for a smooth field
 
 
 def test_partialTargetReportsDroppedHeat():

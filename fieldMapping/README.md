@@ -1,6 +1,6 @@
 # fieldMapping
 
-Conservative transfer of fields between non-matching meshes, built on numpy and
+Conservative transfer of field data between non-matching meshes, built on numpy and
 the Python standard library only.
 
 - **VTU / PVD** reading and writing (`io`): every encoding VTK writes (ascii, inline
@@ -47,7 +47,7 @@ writeVtu("out.vtu", mesh)                   # appended raw + zlib by default
 ```
 
 Polygons are integrated as triangle fans around their centroid and polyhedra as
-tetrahedra (cell centroid, face centroid, edge): linear fields are reproduced
+tetrahedra (cell centroid, face centroid, edge): any linear field is reproduced
 exactly and every closed polyhedron gets its exact volume (signed decomposition,
 also for non-convex cells).
 
