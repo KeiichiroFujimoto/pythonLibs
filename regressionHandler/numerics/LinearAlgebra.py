@@ -110,7 +110,10 @@ class LeastSquaresSolution:
 
 
 def leastSquaresSvd(a: np.ndarray, b: np.ndarray, rcond: float | None = None) -> LeastSquaresSolution:
-    """Minimum-norm least squares via SVD of the column-equilibrated matrix.
+    """Least squares via SVD of the column-equilibrated matrix.
+
+    For rank-deficient problems the returned solution has minimum norm in
+    the equilibrated coordinates (coef * column norms), not in the raw ones.
 
     Column equilibration (dividing every column by its norm) removes the
     scale disparity of raw polynomial terms (1, T, T^2 ... with T ~ 1000),

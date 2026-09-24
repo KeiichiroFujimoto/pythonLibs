@@ -153,4 +153,16 @@ pip install -e ".[all]" pytest
 python -m pytest regressionHandler/tests -q
 ```
 
+- `tests/analytic/` compares every component with closed-form or
+  theoretical results: special-case identities of the incomplete gamma /
+  beta functions and distributions, exact solutions of the optimizers,
+  OLS / WLS / ridge formulas, Lasso soft-thresholding, the P-spline penalty
+  null space, the PRESS identity, the Gaussian-process posterior written
+  out explicitly, the RBF augmented system, the Cox-de Boor recursion, LOESS
+  polynomial reproduction, influence measures from the hat matrix, the
+  nominal size of the normality tests and the known optima of the
+  benchmark functions.
+- the other files test workflows, persistence, model selection and the
+  toolBase service.
+
 The tests use numpy and pytest only.

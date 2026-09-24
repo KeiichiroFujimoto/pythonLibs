@@ -122,8 +122,10 @@ class LinearBasisModel(SurrogateModelBase):
     def looResiduals(self) -> np.ndarray:
         """Exact leave-one-out residuals e_i / (1 - h_ii), shape (n, ny).
 
-        Available for solvers that report leverages (ols, ridge with fixed
-        penalty, robust); the ridge penalty weight is held fixed.
+        Exact for ``ols``. For ridge the penalty (weight and data-scaled
+        penalty matrix) is held at its full-data value, which makes the result
+        a close approximation of refitting; for ``robust`` the final weights
+        are held fixed.
         """
         self._checkTrained()
         sol = self._solution

@@ -8,37 +8,6 @@ from pythonLibs.regressionHandler import (LocalRegressionModel, NonlinearModel, 
                                           SurrogateModelBase, createModel, registerForm)
 from pythonLibs.regressionHandler.models.ModelLibrary import LIBRARY
 
-TRUTH = {
-    "linear": ([1, 2], (0, 5)), "powerLaw": ([2, 1.5], (0.5, 5)), "powerLawOffset": ([2, 1.5, 3], (0.5, 5)),
-    "exponential": ([2, -0.7], (0, 5)), "exponentialDecay": ([5, 1.2, 1], (0, 6)),
-    "exponentialRise": ([4, 0.8, 1], (0, 5)), "inverseExponential": ([2e-3, 1800], (280, 900)),
-    "logistic": ([3, 2, 1, 0.5], (-3, 5)), "saturation": ([5, 2], (0.1, 10)),
-    "powerSaturation": ([5, 2, 2.5], (0.1, 6)), "gaussianPeak": ([4, 2, 0.5, 1], (0, 4)),
-    "weibullCdf": ([3, 2], (0.2, 8)), "sinusoid": ([2, 0.7, 0.4, 1], (0, 10)),
-    "rationalPower": ([3.0, 1.5, 4.0], (0.5, 40)), "linearPlusPower": ([2.0, 0.05, 3.0], (0.1, 10)),
-    "logarithmic": ([1, 2], (0.5, 10)), "inverse": ([1, 2], (0.5, 10)),
-}
-
-
-def _evaluate(name, params, x):
-    m = NonlinearModel(library=name, p0=list(params)).fit(x, np.ones_like(x))
-    m._p = np.array(params, dtype=float)
-    return m.predict(x)
-
-
-def test_libraryCoversEveryForm():
-    assert set(TRUTH) == set(LIBRARY)
-
-
-@pytest.mark.parametrize("name", sorted(TRUTH))
-def test_libraryRecoversParametersFromAutomaticGuess(name):
-    params, (lo, hi) = TRUTH[name]
-    x = np.linspace(lo, hi, 60 if name == "sinusoid" else 40)
-    y = _evaluate(name, params, x)
-    m = NonlinearModel(library=name).fit(x, y)
-    est = np.array(list(m.parameters.values()))
-    np.testing.assert_allclose(est, params, rtol=1e-5)
-
 
 def test_expressionCallableBoundsAndMultiOutput():
     rng = np.random.default_rng(1)
@@ -144,26 +113,3 @@ def test_handlerLibraryWorkflow():
     rep = rh.invoke("fitModel", modelName="k", model="inverseExponential")
     assert rep["parameters"]["y0"][1]["estimate"] == pytest.approx(-3.0, rel=1e-6)
     assert len(rh.invoke("listLibraryForms")["forms"]) == len(LIBRARY)
-
-
-def test_inferenceMatchesClosedForm():
-    rng = np.random.default_rng(0)
-    x = np.linspace(0, 6, 40)
-    y = 5 * np.exp(-x / 1.2) + 1 + rng.normal(0, 0.05, 40)
-    m = createModel("exponentialDecay").fit(x, y)
-    a, tau, c = m.parameters.values()
-    fitted = a * np.exp(-x / tau) + c
-    # the optimum satisfies the normal equations J^T r = 0
-    jac = np.column_stack([np.exp(-x / tau), a * x / tau ** 2 * np.exp(-x / tau), np.ones_like(x)])
-    np.testing.assert_allclose(jac.T @ (y - fitted), 0.0, atol=1e-6)
-    s2 = np.sum((y - fitted) ** 2) / (40 - 3)
-    np.testing.assert_allclose(m.result.stdErrors[:, 0], np.sqrt(np.diag(s2 * np.linalg.inv(jac.T @ jac))),
-                               rtol=1e-4)
-
-
-def test_loessReproducesPolynomialsExactly():
-    x = np.linspace(-2, 3, 80)
-    for degree, y in ((1, 2 - 3 * x), (2, 1 + x - 0.5 * x ** 2)):
-        for span in (0.1, 0.5):
-            m = LocalRegressionModel(span=span, degree=degree).fit(x, y)
-            np.testing.assert_allclose(m.predict(x), y, atol=1e-6)

@@ -4,8 +4,7 @@ import json
 import numpy as np
 import pytest
 
-from pythonLibs.regressionHandler import LinearBasisModel, SurrogateModelBase, createModel, crossValidate
-from pythonLibs.regressionHandler.numerics.Distributions import StudentT
+from pythonLibs.regressionHandler import LinearBasisModel, SurrogateModelBase, createModel
 
 
 @pytest.fixture
@@ -14,36 +13,6 @@ def cubicData():
     x = np.linspace(0, 1, 40)
     y = 1 + 2 * x - 3 * x ** 2 + 0.5 * x ** 3 + rng.normal(0, 0.05, x.size)
     return x, y
-
-
-def test_olsMatchesNormalEquations(cubicData):
-    x, y = cubicData
-    m = createModel("poly3").fit(x, y)
-    a = np.vander(x, 4, increasing=True)
-    coef = np.linalg.solve(a.T @ a, a.T @ y)
-    resid = y - a @ coef
-    s2 = resid @ resid / (40 - 4)
-    cov = s2 * np.linalg.inv(a.T @ a)
-    np.testing.assert_allclose(m.coefficients[:, 0], coef, rtol=1e-10)
-    np.testing.assert_allclose(m.result.stdErrors[:, 0], np.sqrt(np.diag(cov)), rtol=1e-10)
-    t = coef / np.sqrt(np.diag(cov))
-    np.testing.assert_allclose(m.result.pValues[:, 0], 2 * StudentT(36).sf(np.abs(t)), rtol=1e-9)
-    # prediction interval at x = 0.5
-    xv = np.array([1, 0.5, 0.25, 0.125])
-    half = StudentT(36).ppf(0.975) * np.sqrt(s2 + xv @ cov @ xv)
-    pi = m.predictInterval([0.5], 0.95, "prediction")
-    assert pi.upper[0, 0] == pytest.approx(xv @ coef + half, rel=1e-10)
-    assert m.metrics[0].nParams == 4
-    assert m.intervalDof == 36
-
-
-def test_weightedFitEqualsDuplicatedRows():
-    x = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
-    y = np.array([0.1, 1.2, 1.9, 3.2, 3.9])
-    w = np.array([1.0, 2.0, 1.0, 3.0, 1.0])
-    mw = createModel("linear").fit(x, y, weights=w)
-    md = createModel("linear").fit(np.repeat(x, w.astype(int)), np.repeat(y, w.astype(int)))
-    np.testing.assert_allclose(mw.coefficients, md.coefficients, rtol=1e-12)
 
 
 def test_multiOutputAndDerivatives():
@@ -106,15 +75,6 @@ def test_highDegreeOrthogonalIsStable():
     y = np.log(x) * np.sin(x / 150.0)
     m = createModel("ortho14").fit(x, y)
     assert m.metrics[0].rmse < 1e-3
-
-
-def test_analyticLooEqualsRefitLoo(cubicData):
-    x, y = cubicData
-    m = createModel("poly3").fit(x, y)
-    analytic = crossValidate(m, x, y, method="analytic")
-    refit = crossValidate(m, x, y, nFolds=len(x))
-    np.testing.assert_allclose(analytic.predictions, refit.predictions, rtol=1e-10)
-    assert crossValidate(m, x, y, nFolds=5, nJobs=3).rmse[0] > 0
 
 
 def test_jsonRoundTrip(tmp_path, cubicData):

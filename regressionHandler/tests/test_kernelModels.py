@@ -10,7 +10,7 @@ from pythonLibs.regressionHandler.kernels import (AbsoluteExponential, Matern32,
                                                   PowerExponential, RationalQuadratic, SquaredExponential,
                                                   buildKernel)
 from pythonLibs.regressionHandler.numerics.NeighborSearch import NeighborSearch, _bruteForce
-from pythonLibs.regressionHandler.sampling import fullFactorial, latinHypercube, sobolLike
+from pythonLibs.regressionHandler.sampling import latinHypercube
 
 
 def branin(x):
@@ -151,18 +151,6 @@ def test_roundTrip(spec):
         np.testing.assert_allclose(loaded.predictVariances(t), m.predictVariances(t), atol=1e-12)
 
 
-def test_samplingDesigns():
-    lim = np.array([[0.0, 1.0], [10.0, 20.0], [-1.0, 1.0]])
-    for crit in ("random", "center", "maximin", "ese"):
-        s = latinHypercube(12, lim, criterion=crit, seed=0, iterations=5)
-        assert s.shape == (12, 3)
-        strata = np.floor((s - lim[:, 0]) / (lim[:, 1] - lim[:, 0]) * 12).astype(int)
-        for k in range(3):
-            assert sorted(strata[:, k]) == list(range(12))
-    assert fullFactorial([3, 2, 1], lim).shape == (6, 3)
-    assert sobolLike(64, lim).shape == (64, 3)
-
-
 def test_neighborSearchIsExact():
     rng = np.random.default_rng(0)
     for n, d, k in [(20000, 2, 15), (6000, 3, 10), (500, 7, 5)]:
@@ -171,20 +159,6 @@ def test_neighborSearchIsExact():
         dist, _ = NeighborSearch(pts).query(q, k)
         ref, _ = _bruteForce(pts, q, k)
         np.testing.assert_allclose(dist, ref, atol=1e-7)
-
-
-def test_rbfSolvesInterpolationSystem():
-    rng = np.random.default_rng(0)
-    x = rng.uniform(-1, 1, (40, 2))
-    y = np.sin(3 * x[:, 0]) * np.cos(2 * x[:, 1])
-    m = RbfModel(kernel="thinPlateSpline").fit(x, y)
-    np.testing.assert_allclose(m.predict(x), y, atol=1e-10)
-    # polynomial reproduction: TPS with a linear tail interpolates planes exactly everywhere
-    plane = 1 + 2 * x[:, 0] - x[:, 1]
-    t = rng.uniform(-1, 1, (50, 2))
-    np.testing.assert_allclose(RbfModel().fit(x, plane).predict(t), 1 + 2 * t[:, 0] - t[:, 1], atol=1e-9)
-    local = RbfModel(neighbors=15).fit(x, plane)
-    np.testing.assert_allclose(local.predict(t), 1 + 2 * t[:, 0] - t[:, 1], atol=1e-9)
 
 
 def test_krigingOptimumIsStationary():

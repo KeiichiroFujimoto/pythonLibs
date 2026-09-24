@@ -55,7 +55,8 @@ class KrigingModel(SurrogateModelBase):
           desc="Noise-to-signal variance ratio; 'auto' estimates it (regression), a tiny value interpolates")
         d("nuggetBounds", [1e-10, 10.0], types=list, desc="Bounds of the estimated nugget")
         d("likelihood", "reml", values=("reml", "ml"), desc="Restricted or plain maximum likelihood")
-        d("nStart", 5, types=int, lower=1, desc="Number of optimizer starts (initial guess + LHS points)")
+        d("nStart", 5, types=int, lower=1,
+          desc="Optimizer starts (initial guess + LHS points; a tied-lengthscale start is added for ARD kernels)")
         d("maxIter", 200, types=int, lower=1, desc="L-BFGS iterations per start")
         d("seed", 0, types=int, desc="Seed of the multi-start design")
         d("plsComponents", None, types=int, lower=1, desc="Use KPLS with this many PLS components")
@@ -102,6 +103,10 @@ class KrigingModel(SurrogateModelBase):
             p0 = np.concatenate([self._kernel.initialParams(), [np.log(1e-2)] if self._autoNugget else []])
             p0 = np.clip(p0, bounds[:, 0], bounds[:, 1])
             starts = [p0]
+            if nk > 1:
+                tied = self._tiedStart(p0, bounds)
+                if tied is not None:
+                    starts.append(tied)
             if self.options["nStart"] > 1:
                 # Restrict random starts to the central part of the box (in log space).
                 mid = bounds.mean(axis=1)
@@ -118,6 +123,37 @@ class KrigingModel(SurrogateModelBase):
             p = self._optResult.x
         self._factorize(p)
         self._cache = None
+
+    def _tiedStart(self, p0, bounds):
+        """Start point from a cheap fit with all kernel parameters tied to one value.
+
+        With many ARD lengthscales the likelihood is often multimodal; the
+        tied (isotropic-like) optimum lands in the basin of the global optimum
+        far more reliably than random starts do.
+        """
+        nk = self._kernel.nParams()
+
+        def tiedObjective(q):
+            p = np.concatenate([np.full(nk, q[0]), q[1:]])
+            f, g = self._negLogLikelihood(p)
+            return f, np.concatenate([[g[:nk].sum()], g[nk:]])
+
+        lo, hi = float(np.max(bounds[:nk, 0])), float(np.min(bounds[:nk, 1]))
+        if lo >= hi:
+            return None
+        tiedBounds = [(lo, hi)] + [tuple(b) for b in bounds[nk:]]
+        best = None
+        for level in np.linspace(lo + 0.25 * (hi - lo), hi - 0.4 * (hi - lo), 3):
+            q0 = np.concatenate([[level], p0[nk:]])
+            try:
+                res = minimize(tiedObjective, q0, jac=True, bounds=tiedBounds, maxIter=self.options["maxIter"], tol=1e-6)
+            except (ValueError, np.linalg.LinAlgError):
+                continue
+            if best is None or res.fun < best.fun:
+                best = res
+        if best is None:
+            return None
+        return np.concatenate([np.full(nk, best.x[0]), best.x[1:]])
 
     @property
     def _autoNugget(self) -> int:

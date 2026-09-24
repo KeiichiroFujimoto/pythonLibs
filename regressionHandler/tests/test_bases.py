@@ -62,24 +62,3 @@ def test_expressionBasisRejectsCode():
         ExpressionBasis(terms=["__import__('os')"]).fit(np.zeros((2, 1)))
     with pytest.raises(ValueError):
         ExpressionBasis(terms=["x0.real"]).fit(np.zeros((2, 1)))
-
-
-def test_bsplineCoxDeBoorReference():
-    """Compare with the textbook Cox-de Boor recursion on the same uniform knots."""
-    x = np.sort(np.random.default_rng(0).uniform(0, 3, 50))
-    nSeg, deg = 7, 3
-    b = BSplineBasis(nSegments=nSeg, degree=deg).fit(x[:, None])
-    lo, hi = x.min(), x.max()
-    t = lo + np.arange(-deg, nSeg + deg + 1) * (hi - lo) / nSeg
-
-    def coxDeBoor(i, k, v):
-        if k == 0:
-            # half-open intervals; the right end of the data range belongs to the last one
-            inside = (t[i] <= v) & (v < t[i + 1]) & (v < hi)
-            return np.where(inside | ((v == hi) & np.isclose(t[i + 1], hi)), 1.0, 0.0)
-        left = (v - t[i]) / (t[i + k] - t[i]) * coxDeBoor(i, k - 1, v)
-        right = (t[i + k + 1] - v) / (t[i + k + 1] - t[i + 1]) * coxDeBoor(i + 1, k - 1, v)
-        return left + right
-
-    ref = np.column_stack([coxDeBoor(i, deg, x) for i in range(nSeg + deg)])
-    np.testing.assert_allclose(b.transform(x[:, None]), ref, atol=1e-13)

@@ -1,11 +1,9 @@
 """Model selection, stepwise, tuning, diagnostics, bootstrap, problems, reports and handler commands."""
 import numpy as np
-import pytest
 
 from pythonLibs.regressionHandler import (ModelSelector, RegressionHandler, bootstrap, createModel, defaultCandidates,
                                           diagnose, getProblem, modelReport, stepwiseSelect, tuneHyperparameters)
-from pythonLibs.regressionHandler.evaluation.Diagnostics import breuschPagan, jarqueBera, normalTest, runsTest
-from pythonLibs.regressionHandler.sampling import PROBLEMS
+from pythonLibs.regressionHandler.evaluation.Diagnostics import runsTest
 
 
 def test_diagnosticsFlagMisspecificationAndHeteroscedasticity():
@@ -84,13 +82,6 @@ def test_bootstrapAgreesWithAnalyticBands():
         assert r.lower[0, 0] < r.upper[0, 0] and r.nFailed == 0
 
 
-def test_problems():
-    for name, prob in PROBLEMS.items():
-        x, y = prob.sample(20, seed=0)
-        assert x.shape == (20, prob.nx) and np.all(np.isfinite(y)), name
-    assert getProblem("branin")(np.array([[np.pi, 2.275]]))[0] == pytest.approx(0.397887, rel=1e-5)
-
-
 def test_reportMarkdown():
     x = np.linspace(0, 1, 30)
     m = createModel("quadratic").fit(x, 1 + x ** 2)
@@ -123,34 +114,3 @@ def test_handlerPhase4Commands(tmp_path):
     ids = {c["id"] for c in rh.buildCatalog()}
     assert {"autoFit", "compareModels", "tuneModel", "stepwiseSelect", "diagnoseModel", "bootstrapModel",
             "generateSamples", "sampleBenchmark", "exportReport"} <= ids
-
-
-def test_normalityReferenceValues():
-    r = np.random.default_rng(0).standard_t(4, size=120)
-    np.testing.assert_allclose(normalTest(r), (4.044140940249872, 0.13238109004343904), rtol=1e-10)
-    np.testing.assert_allclose(jarqueBera(r), (4.128205667643757, 0.12693211870280113), rtol=1e-10)
-
-
-def test_influenceMatchesClosedForm():
-    rng = np.random.default_rng(0)
-    x = np.linspace(0, 1, 60)
-    y = 1 + 2 * x - 3 * x ** 2 + rng.normal(0, 0.05, 60)
-    y[10] += 0.6
-    d = diagnose(createModel("quadratic").fit(x, y)).outputs[0]
-    a = np.column_stack([np.ones_like(x), x, x ** 2])
-    hat = a @ np.linalg.solve(a.T @ a, a.T)
-    h = np.diag(hat)
-    e = y - hat @ y
-    n, p = a.shape
-    s2 = e @ e / (n - p)
-    internal = e / np.sqrt(s2 * (1 - h))
-    external = internal * np.sqrt((n - p - 1) / (n - p - internal ** 2))
-    np.testing.assert_allclose(d["leverage"], h, atol=1e-12)
-    np.testing.assert_allclose(d["cooksDistance"], internal ** 2 * h / (p * (1 - h)), atol=1e-12)
-    np.testing.assert_allclose(d["studentized"], external, atol=1e-10)
-    assert d["outliers"] == [10]
-    # Koenker LM = n R^2 of e^2 on the regressors
-    e2 = e * e
-    coef = np.linalg.lstsq(a, e2, rcond=None)[0]
-    r2 = 1 - np.sum((e2 - a @ coef) ** 2) / np.sum((e2 - e2.mean()) ** 2)
-    assert breuschPagan(e, a[:, 1:])[0] == pytest.approx(n * r2, rel=1e-10)
