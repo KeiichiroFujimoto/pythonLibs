@@ -483,7 +483,7 @@ class RegressionHandler(toolBaseSecured):
                 "parameterIntervals", "glmSummary", "gamSummary", "termTable", "residuals", "varianceComponents",
                 "randomEffects", "evidence", "featureImportance", "outOfBag", "trainingHistory", "coregionalization",
                 "varianceParameters", "transformParameter", "inputCorrections", "pseudoR2", "objective",
-                "coefficients", "leverage", "parameters")
+                "coefficients", "leverage", "parameters", "constraintReport", "groups")
     _ASPECT_KWARGS = {"parameterIntervals": {"level", "method", "nGrid"}, "residuals": {"kind"}}
 
     @classmethod

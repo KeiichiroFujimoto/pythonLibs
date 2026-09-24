@@ -1,6 +1,8 @@
 """Regression / surrogate models."""
 from pythonLibs.regressionHandler.models.BayesianLinearModel import BayesianLinearModel
 from pythonLibs.regressionHandler.models.CokrigingModel import CokrigingModel
+from pythonLibs.regressionHandler.models.ConstrainedModel import ConstrainedModel
+from pythonLibs.regressionHandler.models.DimensionlessModel import DimensionlessModel
 from pythonLibs.regressionHandler.models.GamModel import GamModel
 from pythonLibs.regressionHandler.models.GlmModel import GlmModel
 from pythonLibs.regressionHandler.models.GradientKrigingModel import GradientKrigingModel
@@ -24,6 +26,6 @@ from pythonLibs.regressionHandler.models.SplineModel import SplineModel
 from pythonLibs.regressionHandler.models.TransformedTargetModel import TransformedTargetModel
 from pythonLibs.regressionHandler.models.TreeModels import GradientBoostingModel, RandomForestModel
 
-__all__ = ["LinearBasisModel", "KrigingModel", "CokrigingModel", "ScalableKrigingModel", "GlmModel", "GamModel", "QuantileModel", "quantileProcess", "MultiFidelityKrigingModel", "GradientKrigingModel", "OdrModel", "HeteroscedasticModel", "TransformedTargetModel", "RandomForestModel", "GradientBoostingModel", "NeuralNetworkModel", "MixedModel", "IsotonicModel", "ShapeSplineModel", "BayesianLinearModel", "KplsModel", "RbfModel", "IdwModel", "NonlinearModel",
+__all__ = ["ConstrainedModel", "DimensionlessModel", "LinearBasisModel", "KrigingModel", "CokrigingModel", "ScalableKrigingModel", "GlmModel", "GamModel", "QuantileModel", "quantileProcess", "MultiFidelityKrigingModel", "GradientKrigingModel", "OdrModel", "HeteroscedasticModel", "TransformedTargetModel", "RandomForestModel", "GradientBoostingModel", "NeuralNetworkModel", "MixedModel", "IsotonicModel", "ShapeSplineModel", "BayesianLinearModel", "KplsModel", "RbfModel", "IdwModel", "NonlinearModel",
            "SplineModel", "LocalRegressionModel", "createModel", "availableModels", "expandShorthand",
            "LIBRARY", "libraryCatalog", "registerForm"]

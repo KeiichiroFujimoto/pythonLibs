@@ -25,7 +25,10 @@ regressionHandler/
   RegressionHandler.py   toolBaseSecured service (@secure_expose commands)
   core/                  SurrogateModelBase, OptionsDictionary, Registry, FitResult, FitMetrics, SafeExpression
   numerics/              SpecialFunctions, Distributions, LinearAlgebra, Optimizers, PLS, NeighborSearch,
-                         Trees (histogram trees)
+                         Trees (histogram trees), Sparse (coordinate sparse matrix)
+  constraints/           linear functionals (values, derivatives, integrals, output balances, bounds, shape),
+                         boundedQp, conservative projection (projectAffine / projectNonlinear),
+                         Buckingham pi analysis
   glm/                   exponential families, links, penalized IRLS, GCV / UBRE smoothing selection
   bases/                 polynomial, orthogonalPolynomial, radial, bspline, expression, combined
   solvers/               ols, ridge (GCV/LOO), elasticNet, robust (IRLS), lars (sparse, LOO-selected)
@@ -39,7 +42,8 @@ regressionHandler/
                          KrigingModel (KPLS), CokrigingModel, ScalableKrigingModel, MultiFidelityKrigingModel,
                          GradientKrigingModel, RbfModel, IdwModel, SplineModel, ShapeSplineModel,
                          IsotonicModel, LocalRegressionModel (LOESS), RandomForestModel,
-                         GradientBoostingModel, NeuralNetworkModel, ModelLibrary, ModelFactory
+                         GradientBoostingModel, NeuralNetworkModel, ConstrainedModel, DimensionlessModel,
+                         ModelLibrary, ModelFactory
   evaluation/            crossValidate (k-fold, threaded, analytic LOO), ModelSelector / defaultCandidates,
                          tuneHyperparameters, stepwiseSelect, diagnose, bootstrap, modelReport,
                          empiricalVariogram / fitVariogram, sobolIndices (PCE exact / Monte Carlo)
@@ -95,6 +99,8 @@ type name (`glm`, `gam`, `quantile`, `randomForest`, ...).
 | `spline` | penalized B-splines | 1-3 D | yes | P-spline, GCV / LOO smoothing |
 | `loess` | local polynomial regression | N-D | yes (equivalent kernel) | local polynomial degree 0-2, robustness iterations |
 | `glm` | generalized linear model | N-D | yes (link scale, delta) | gaussian, binomial, poisson, gamma, inverse Gaussian, negative binomial (theta ML), tweedie; any link; offsets; penalties |
+| `constrained` | any model + exact physical constraints | N-D | yes (conditioned) | integrals / means, values, derivatives, output balances, bounds, monotone / convex; constrained GLS, posterior conditioning or minimum-norm correction |
+| `dimensionless` | regression on Buckingham pi groups | N-D | from base | dimensionally homogeneous, unit invariant; any base model on (log) pi groups |
 | `gam` | generalized additive model | N-D | yes (Bayesian) | P-spline, tensor, linear, factor and random terms; GCV / UBRE; partial effects; any family |
 | `quantile` | linear quantile regression | N-D | yes (confidence) | exact interior-point LP; nid / iid / kernel / bootstrap errors; any basis |
 | `bayesLinear` | Bayesian linear regression | N-D | yes | evidence-maximized ridge or ARD (sparse) prior |
@@ -221,6 +227,44 @@ OdrModel(expression="a*exp(-b*x)", params=["a", "b"], xSigma=0.1, ySigma=0.05).f
 TransformedTargetModel(model="gp", transform="boxcox").fit(x, y)
 createModel("pce8").fit(x, y); sobolIndices(_)                             # sparse PCE + exact Sobol indices
 ```
+
+### Physics-preserving regression
+
+`ConstrainedModel` wraps any model and corrects it by the smallest change, in the metric of
+the model's own uncertainty, that satisfies linear physical constraints exactly:
+
+```python
+from pythonLibs.regressionHandler import ConstrainedModel, DimensionlessModel
+
+grid = np.linspace(0, 1, 41)[:, None]
+m = ConstrainedModel(model="poly5", constraints=[
+    {"type": "integral", "value": total, "box": {"lower": [0], "upper": [1]}},   # conserved total
+    {"type": "value", "points": [[0.0]], "values": [1.0]},                       # boundary value
+    {"type": "derivative", "points": [[1.0]], "kx": 0, "values": [0.0]},         # zero flux
+    {"type": "bound", "points": grid, "lower": 0.0},                             # positivity
+    {"type": "monotone", "points": grid, "kx": 0, "increasing": False},
+]).fit(x, y)
+m.constraintReport()                  # value, residual, multiplier, active flag per constraint
+ConstrainedModel(model="linear", constraints=[{"type": "outputSum", "points": pts,
+                 "coefficients": [1, 1, 1], "value": 1.0}])                    # balance across outputs
+```
+
+- linear-basis models: constrained generalized least squares (exact KKT solution); the
+  coefficient covariance is projected onto the active constraints, so intervals shrink
+  where the physics fixes the answer; derivatives stay exact
+- models with a joint covariance (Kriging family): the posterior conditioned on the
+  constraints (constrained mean, exact conditional variances / covariance)
+- any other model: minimum-norm correction in a squared-exponential kernel space
+- inequalities are handled exactly as a bounded dual QP (active set) and hold at their
+  points; integrals hold for their quadrature rule (Gauss-Legendre on boxes, or given)
+
+`DimensionlessModel(inputDimensions=[{"L": 1}, {"L": 1, "T": -2}], outputDimension={"T": 1})`
+builds the Buckingham pi groups with exact rational arithmetic and fits any base model on
+them, so predictions are dimensionally homogeneous and invariant to the choice of units.
+
+The projection engine is also available directly: `projectAffine(x0, w, C, d, lb, ub)`
+(min sum w (x - x0)^2 subject to C x = d and bounds; semismooth Newton on the multipliers,
+millions of values) and `projectNonlinear` for conservation laws g(x) = d.
 
 ## Selection, diagnostics and uncertainty
 
