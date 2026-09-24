@@ -161,6 +161,10 @@ class TransformedTargetModel(SurrogateModelBase):
     def predictInterval(self, x, level: float = 0.95, kind: str = "prediction") -> PredictionInterval:
         """Inner-model interval mapped through T^-1 (asymmetric on the original scale)."""
         self._checkTrained()
+        if self._subModels is not None:
+            parts = [m.predictInterval(x, level, kind) for m in self._subModels]
+            return PredictionInterval(*(np.hstack([getattr(p, a) for p in parts]) for a in
+                                        ("mean", "lower", "upper", "std")), float(level), kind)
         inner = self._model.predictInterval(self._validX(x), level, kind)
         lo = self._inv(inner.lower[:, 0], self._lambda)
         hi = self._inv(inner.upper[:, 0], self._lambda)
@@ -174,7 +178,8 @@ class TransformedTargetModel(SurrogateModelBase):
         return (self._dInv(z, self._lambda) * self._model.predictDerivatives(x, kx)[:, 0])[:, None]
 
     def _effectiveParams(self):
-        return float(np.atleast_1d(self._model.nEffectiveParams)[0]) + (1.0 if self.options["lambda"] == "auto" else 0.0)
+        estimated = self.options["transform"] in ("boxcox", "yeoJohnson") and self.options["lambda"] == "auto"
+        return float(np.atleast_1d(self._model.nEffectiveParams)[0]) + (1.0 if estimated else 0.0)
 
     @property
     def transformParameter(self) -> float:

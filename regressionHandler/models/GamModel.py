@@ -266,7 +266,7 @@ class GamModel(GlmModel):
         for _ in range(50):
             lam, res, score = selectSmoothing(x, y, w, self._family, penalties, self.options["method"], off,
                                               tuple(self.options["logLambdaBounds"]), float(self.options["gamma"]),
-                                              self.options["maxIter"], fixed)
+                                              self.options["maxIter"], fixed, self._fixedScale())
             before = getattr(self._family, "theta", None)
             if getattr(self._family, "estimateTheta", False):
                 self._family.updateTheta(y, res.mu, w)
@@ -286,6 +286,8 @@ class GamModel(GlmModel):
             self._phi = res.deviance / max(n - res.edf, 1.0)
         self._nullDeviance = self._nullFit(y, w, off)
         self._logLik = self._logLikelihood(y, w)
+        # R factor of each term's training design: the term Wald test works with f_j = X_j beta_j
+        self._termR = [np.linalg.qr(x[:, sl], mode="r") for sl in self._blockSlices()]
         self.result = FitResult(parameterNames=self.termNames, params=res.coef[:, None],
                                 covariance=(self._phi * res.covUnscaled)[None],
                                 dofResid=float("inf") if fam.scaleKnown else max(n - res.edf, 1.0),
@@ -304,8 +306,12 @@ class GamModel(GlmModel):
         return (self._family.link.dmuDeta(eta) * deta)[:, None]
 
     def predictTerms(self, x) -> dict:
-        """Centred partial effects on the link scale: {label: {"fit": (m,), "se": (m,)}}."""
+        """Centred partial effects on the link scale: {label: {"fit": (m,), "se": (m,)}}.
+
+        With several outputs: {outputName: {label: ...}}."""
         self._checkTrained()
+        if self._subModels is not None:
+            return self._eachOutput("predictTerms", x)
         xv = self._validX(x)
         out = {}
         for t, sl in zip(self._terms, self._blockSlices()):
@@ -326,22 +332,29 @@ class GamModel(GlmModel):
     def termTable(self) -> list[dict]:
         """Per term: edf, smoothing parameters and an approximate Wald test of 'term = 0'.
 
-        The statistic beta_j^T V_j^+ beta_j uses a rank-r pseudo-inverse with
-        r = max(1, round(edf_j)); p-values are approximate (chi^2_r, or F_{r, n-edf}
-        for unknown scale), in the spirit of Wood (2006).
+        Following Wood (2006), the test uses the term's values at the training
+        points, f_j = X_j beta_j with covariance V_f = X_j V_j X_j^T: the
+        statistic f_j^T V_f^{r-} f_j takes a rank-r pseudo-inverse with
+        r = max(1, round(edf_j)). With X_j = Q R this equals the same form in
+        R beta_j and R V_j R^T, so only the small R factor is kept. p-values
+        are approximate (chi^2_r, or F_{r, n-edf} for unknown scale).
+        With several outputs: {outputName: rows}.
         """
         self._checkTrained()
-        n = self.xt.shape[0]
+        if self._subModels is not None:
+            return self._eachOutput("termTable")
+        n = self.nTrain
         rows = []
         for ti, (t, sl) in enumerate(zip(self._terms, self._blockSlices())):
-            beta = self._res.coef[sl]
-            v = self._res.covUnscaled[sl, sl] * self._phi
+            rj = self._termR[ti] if self._termR is not None else np.eye(t.size)
+            f = rj @ self._res.coef[sl]
+            v = rj @ (self._res.covUnscaled[sl, sl] * self._phi) @ rj.T
             edf = float(np.sum(self._res.edfTerms[sl])) if self._res.edfTerms.size else float("nan")
             r = max(1, int(round(edf))) if np.isfinite(edf) else t.size
             wv, vv = np.linalg.eigh(0.5 * (v + v.T))
-            idx = np.argsort(wv)[::-1][:min(r, t.size)]
+            idx = np.argsort(wv)[::-1][:min(r, wv.size)]
             keep = idx[wv[idx] > wv.max() * 1e-12] if wv.size else idx
-            stat = float(np.sum((vv[:, keep].T @ beta) ** 2 / wv[keep])) if keep.size else 0.0
+            stat = float(np.sum((vv[:, keep].T @ f) ** 2 / wv[keep])) if keep.size else 0.0
             rank = keep.size
             if self._family.scaleKnown:
                 pv = float(ChiSquared(max(rank, 1)).sf(stat))
@@ -356,6 +369,10 @@ class GamModel(GlmModel):
         return rows
 
     def gamSummary(self) -> dict:
+        """glmSummary plus criterion, score, smoothing parameters and deviance explained."""
+        self._checkTrained()
+        if self._subModels is not None:
+            return self._eachOutput("gamSummary")
         out = self.glmSummary()
         out.pop("penaltyWeight", None)
         crit = self.options["method"]
@@ -368,7 +385,9 @@ class GamModel(GlmModel):
 
     def summary(self) -> str:
         self._checkTrained()
-        lines = [f"Model: {self.describe()}", f"Training points: {self.xt.shape[0]}, inputs: {self.nx}"]
+        if self._subModels is not None:
+            return super().summary()
+        lines = [f"Model: {self.describe()}", f"Training points: {self.nTrain}, inputs: {self.nx}"]
         m = self.metrics[0]
         lines.append(f"  {self.outputNames[0]}: R2={m.rSquared:.6g}  RMSE={m.rmse:.6g}  edf={self._res.edf:.4g}")
         se = self.result.stdErrors[:, 0]
@@ -394,7 +413,7 @@ class GamModel(GlmModel):
         state.pop("basis", None)
         state.update({"terms": [t.state() for t in self._terms], "termSpecs": self._termSpecs(),
                       "lambdas": self._lambdas.tolist(), "score": self._score, "owners": self._owners,
-                      "edfTerms": self._res.edfTerms.tolist()})
+                      "edfTerms": self._res.edfTerms.tolist(), "termR": [r.tolist() for r in self._termR]})
         return state
 
     def _stateFromDict(self, state: dict) -> None:
@@ -423,3 +442,4 @@ class GamModel(GlmModel):
         self._lambdas = np.array(state["lambdas"], dtype=float)
         self._score = float(state["score"])
         self._owners = list(state["owners"])
+        self._termR = [np.array(r, dtype=float) for r in state["termR"]] if "termR" in state else None

@@ -191,7 +191,8 @@ class NeuralNetworkModel(SurrogateModelBase):
             order = rng.permutation(tr)
             for s in range(0, order.size, bs):
                 idx = order[s:s + bs]
-                _, g = self._net.lossGrad(theta, xs[idx], ys[idx], wd * idx.size / tr.size, tr.size)
+                # the mini-batch objective 0.5 mean|r|^2 + 0.5 wd |W|^2 / n is an unbiased estimate of the full one
+                _, g = self._net.lossGrad(theta, xs[idx], ys[idx], wd, tr.size)
                 step += 1
                 m1 = b1 * m1 + (1 - b1) * g
                 m2 = b2 * m2 + (1 - b2) * g * g

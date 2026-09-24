@@ -52,13 +52,22 @@ def pava(y: np.ndarray, w: Optional[np.ndarray] = None, increasing: bool = True)
 
 
 def nnls(a: np.ndarray, b: np.ndarray, maxIter: Optional[int] = None) -> np.ndarray:
-    """Non-negative least squares min |A x - b|, x >= 0 (Lawson-Hanson active set)."""
+    """Non-negative least squares min |A x - b|, x >= 0 (Lawson-Hanson active set).
+
+    Columns are scaled to unit norm internally, so the tolerances are relative
+    and the result does not depend on the scale of A.
+    """
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
     m, n = a.shape
+    norms = np.linalg.norm(a, axis=0)
+    norms[norms == 0] = 1.0
+    an = a / norms
     x = np.zeros(n)
     passive = np.zeros(n, dtype=bool)
     maxIter = maxIter or 3 * n + 50
-    wv = a.T @ (b - a @ x)
-    tol = 10.0 * np.finfo(float).eps * np.linalg.norm(a, 1) * max(m, n)
+    tol = 10.0 * np.finfo(float).eps * max(m, n) * max(1.0, float(np.linalg.norm(b)))
+    wv = an.T @ b
     for _ in range(maxIter):
         if passive.all() or np.max(np.where(passive, -np.inf, wv)) <= tol:
             break
@@ -66,43 +75,78 @@ def nnls(a: np.ndarray, b: np.ndarray, maxIter: Optional[int] = None) -> np.ndar
         passive[j] = True
         while True:
             z = np.zeros(n)
-            z[passive] = np.linalg.lstsq(a[:, passive], b, rcond=None)[0]
-            if np.all(z[passive] > tol):
+            z[passive] = np.linalg.lstsq(an[:, passive], b, rcond=None)[0]
+            if np.all(z[passive] > 0):
                 x = z
                 break
-            neg = passive & (z <= tol)
+            neg = passive & (z <= 0)
             alpha = np.min(x[neg] / np.maximum(x[neg] - z[neg], 1e-300))
             x = x + alpha * (z - x)
-            passive &= x > tol
+            passive &= x > 0
             x[~passive] = 0.0
-        wv = a.T @ (b - a @ x)
-    return x
+        wv = an.T @ (b - an @ x)
+    return x / norms
 
 
-def constrainedLeastSquares(m: np.ndarray, r: np.ndarray, a: np.ndarray) -> np.ndarray:
-    """min |M c - r|  subject to  A c >= 0, exactly (LSI -> LDP -> NNLS; Lawson & Hanson 1974, ch. 23).
+def constrainedLeastSquares(m: np.ndarray, r: np.ndarray, a: np.ndarray, maxIter: Optional[int] = None) -> np.ndarray:
+    """min |M c - r|  subject to  A c >= 0, exactly, by a primal active-set method.
 
-    M must have full column rank.
+    c = 0 is feasible, so the iterates stay feasible throughout; every step
+    solves the equality-constrained problem on the current working set in its
+    null space (SVD), which also copes with a rank-deficient M (the minimum-norm
+    solution is taken). Constraints are added when they block a step and the
+    one with the most negative multiplier is released at a stationary point.
     """
+    m = np.asarray(m, dtype=float)
+    r = np.asarray(r, dtype=float)
+    a = np.asarray(a, dtype=float)
+    n = m.shape[1]
     if a.shape[0] == 0:
         return np.linalg.lstsq(m, r, rcond=None)[0]
-    q, rr = np.linalg.qr(m)
-    qtr = q.T @ r
-    rInv = np.linalg.inv(rr)
-    # c = R^-1 (u + Q^T r):  min |u|  s.t.  G u >= h,  G = A R^-1,  h = -G Q^T r
-    g = a @ rInv
-    h = -g @ qtr
-    if np.all(h <= 0):                                   # unconstrained solution already feasible
-        return rInv @ qtr
-    e = np.vstack([g.T, h[None, :]])
-    f = np.zeros(e.shape[0])
-    f[-1] = 1.0
-    v = nnls(e, f)
-    rho = e @ v - f
-    if abs(rho[-1]) < 1e-14:
-        raise ValueError("shape constraints are infeasible")
-    u = -rho[:-1] / rho[-1]
-    return rInv @ (u + qtr)
+    rowNorm = np.linalg.norm(a, axis=1)
+    rowNorm[rowNorm == 0] = 1.0
+    a = a / rowNorm[:, None]
+    c = np.zeros(n)
+    free = np.linalg.lstsq(m, r, rcond=None)[0]
+    if np.all(a @ free >= -1e-12 * max(1.0, float(np.linalg.norm(free)))):
+        return free
+    work = np.zeros(a.shape[0], dtype=bool)
+    tol = 1e-12
+    for _ in range(maxIter or 10 * (n + a.shape[0])):
+        act = np.flatnonzero(work)
+        if act.size:
+            _, sv, vt = np.linalg.svd(a[act])
+            rank = int(np.sum(sv > 1e-12 * sv[0]))
+            basis = vt[rank:].T                                  # null space of the working constraints
+        else:
+            basis = np.eye(n)
+        if basis.shape[1]:
+            target = basis @ np.linalg.lstsq(m @ basis, r, rcond=None)[0]
+        else:
+            target = np.zeros(n)
+        step = target - c
+        if np.linalg.norm(step) > tol * max(1.0, float(np.linalg.norm(c))):
+            slope = a @ step
+            blocking = (~work) & (slope < -tol)
+            alpha, hit = 1.0, -1
+            if np.any(blocking):
+                ratios = np.where(blocking, -(a @ c) / np.where(blocking, slope, -1.0), np.inf)
+                hit = int(np.argmin(ratios))
+                alpha = min(1.0, max(float(ratios[hit]), 0.0))
+            c = c + alpha * step
+            if alpha < 1.0:
+                work[hit] = True
+                continue
+        # stationary on the working set: multipliers from M^T (M c - r) = A_W^T mu
+        act = np.flatnonzero(work)
+        if not act.size:
+            break
+        grad = m.T @ (m @ c - r)
+        mu = np.linalg.lstsq(a[act].T, grad, rcond=None)[0]
+        if np.all(mu >= -tol * max(1.0, float(np.linalg.norm(grad)))):
+            break
+        work[act[int(np.argmin(mu))]] = False
+    return c
 
 
 @registry("model").register("isotonic")

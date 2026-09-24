@@ -18,6 +18,12 @@ otherwise). Predictions are on the response scale; ``predictLink`` gives
 the linear predictor and ``predictInterval(kind="confidence")`` maps the
 link-scale interval through the inverse link (it stays inside the valid
 range, e.g. [0, 1] for probabilities).
+
+With several outputs one GLM is fitted per output; the GLM-specific methods
+then return {outputName: result} (or stacked columns for array results).
+The log-likelihood (AIC, BIC) follows the usual conventions for weighted
+fits: gaussian scale D / n with sum(log w) / 2, gamma and inverse Gaussian
+scale D / sum(w) with the density weighted by w.
 """
 from __future__ import annotations
 
@@ -123,11 +129,19 @@ class GlmModel(SurrogateModelBase):
         if pen is None:
             return pirls(phi, y, w, self._family, None, off, None, self.options["maxIter"], self.options["tol"])
         if isinstance(a, str):
-            lam, res, score = selectSmoothing(phi, y, w, self._family, [pen], a, off, maxIter=self.options["maxIter"])
+            lam, res, score = selectSmoothing(phi, y, w, self._family, [pen], a, off, maxIter=self.options["maxIter"],
+                                              scale=self._fixedScale())
             self._alpha, self._criterion = float(lam[0]), float(score)
             return res
         self._alpha = float(a)
         return pirls(phi, y, w, self._family, a * pen, off, None, self.options["maxIter"], self.options["tol"])
+
+    def _fixedScale(self) -> Optional[float]:
+        """Known scale for UBRE: 1 for known-scale families, a numeric ``dispersion``, else None."""
+        if self._family.scaleKnown:
+            return 1.0
+        d = self.options["dispersion"]
+        return None if isinstance(d, str) else float(d)
 
     def _nullFit(self, y, w, off) -> float:
         ones = np.ones((y.size, 1))
@@ -140,21 +154,23 @@ class GlmModel(SurrogateModelBase):
         fam, mu = self._family, self._res.mu
         if fam.scaleKnown:
             return fam.logLikelihood(y, mu, w, 1.0)
-        phiMl = self._res.deviance / float(np.sum(w))           # ML-type scale used for AIC
-        if fam.name == "gamma":
-            phiMl = self._res.deviance / y.size
+        # ML-type scale used for AIC: D / n for the gaussian (weights enter as precisions),
+        # D / sum(w) where the weights scale the density (gamma, inverse Gaussian)
+        phiMl = self._res.deviance / (y.size if fam.name == "gaussian" else float(np.sum(w)))
         return fam.logLikelihood(y, mu, w, phiMl)
 
     def _buildResult(self) -> FitResult:
-        dof = float("inf") if self._family.scaleKnown else max(self.xt.shape[0] - self._res.edf, 1.0)
+        dof = float("inf") if self._family.scaleKnown else max(self.nTrain - self._res.edf, 1.0)
         return FitResult(parameterNames=self.termNames, params=self._res.coef[:, None],
                          covariance=(self._phi * self._res.covUnscaled)[None], dofResid=dof,
                          sigma2=np.array([self._phi]), outputNames=self.outputNames)
 
     # ------------------------------------------------------------------ prediction
     def predictLink(self, x) -> np.ndarray:
-        """Linear predictor eta = Phi(x) beta + offset, shape (m,)."""
+        """Linear predictor eta = Phi(x) beta + offset, shape (m,) (one column per output if several)."""
         self._checkTrained()
+        if self._subModels is not None:
+            return np.column_stack([m.predictLink(x) for m in self._subModels])
         phi, off = self._design(self._validX(x))
         return phi @ self._res.coef + off
 
@@ -179,6 +195,10 @@ class GlmModel(SurrogateModelBase):
         if kind != "confidence":
             return super().predictInterval(x, level, kind)
         self._checkTrained()
+        if self._subModels is not None:
+            parts = [m.predictInterval(x, level, kind) for m in self._subModels]
+            return PredictionInterval(*(np.hstack([getattr(p, a) for p in parts])
+                                        for a in ("mean", "lower", "upper", "std")), float(level), kind)
         if not 0.0 < level < 1.0:
             raise ValueError("level must be in (0, 1)")
         phi, off = self._design(self._validX(x))
@@ -209,7 +229,7 @@ class GlmModel(SurrogateModelBase):
         return self._res.edf
 
     def _intervalDof(self) -> Optional[float]:
-        return None if self._family.scaleKnown else max(self.xt.shape[0] - self._res.edf, 1.0)
+        return None if self._family.scaleKnown else max(self.nTrain - self._res.edf, 1.0)
 
     # ------------------------------------------------------------------ reporting
     @property
@@ -222,16 +242,24 @@ class GlmModel(SurrogateModelBase):
 
     @property
     def coefficients(self) -> np.ndarray:
+        """(p,) coefficients, or {outputName: (p,)} with several outputs."""
         self._checkTrained()
+        if self._subModels is not None:
+            return {n: m.coefficients for n, m in zip(self.outputNames, self._subModels)}
         return self._res.coef.copy()
 
     @property
     def family(self):
+        if self._subModels is not None:
+            return self._subModels[0].family
         return self._family
 
     def residuals(self, kind: str = "deviance") -> np.ndarray:
-        """Training residuals: response, pearson, deviance or working."""
+        """Training residuals: response, pearson, deviance or working (one column per output if several)."""
         self._checkTrained()
+        if self._subModels is not None:
+            return np.column_stack([m.residuals(kind) for m in self._subModels])
+        self._requireTrainingData()
         y, w = self.yt[:, 0], self.wt
         eta = self.predictLink(self.xt)
         mu = self._family.link.inverse(eta)
@@ -249,7 +277,9 @@ class GlmModel(SurrogateModelBase):
     def glmSummary(self) -> dict:
         """Deviance table: deviance, null deviance, dispersion, edf, log-likelihood, AIC, BIC."""
         self._checkTrained()
-        n = self.xt.shape[0]
+        if self._subModels is not None:
+            return self._eachOutput("glmSummary")
+        n = self.nTrain
         k = self._res.edf + self._family.extraParams
         ll = self._logLik
         return {"family": self._family.describe(), "deviance": self._res.deviance,
@@ -260,6 +290,10 @@ class GlmModel(SurrogateModelBase):
                 "theta": getattr(self._family, "theta", None) if self._family.name == "negativeBinomial" else None}
 
     def summary(self) -> str:
+        self._checkTrained()
+        if self._subModels is not None:
+            return f"Model: {self.describe()}\n\n" + "\n\n".join(
+                f"[{name}]\n{m.summary()}" for name, m in zip(self.outputNames, self._subModels))
         text = super().summary()
         rows = [f"  {k:>14}: {v:.6g}" if isinstance(v, float) else f"  {k:>14}: {v}"
                 for k, v in self.glmSummary().items() if v is not None]

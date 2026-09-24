@@ -14,7 +14,9 @@ Design principles:
   intervals, `summary()`) and cross-validation built in
 - JSON persistence (no pickle), silent by default; large numeric arrays are
   embedded as exact, zlib-compressed binary blocks (``save(compact=True)``,
-  the default), plain lists with ``compact=False``
+  the default), plain lists with ``compact=False``; files are strict JSON
+  (NaN / Infinity stored as tagged values) and models saved without their
+  training data keep their inference (intervals, summaries, term tests)
 
 ## Layout
 
@@ -260,7 +262,15 @@ Commands (category `regression`):
 returns one of them (whitelisted), e.g. `glmSummary`, `gamSummary`, `termTable`,
 `spatialSummary`, `looDiagnostics`, `parameterIntervals` (`{"level": 0.9, "method": "profile"}`),
 `varianceComponents`, `randomEffects`, `evidence`, `featureImportance`, `outOfBag`,
-`coregionalization`, `residuals` (`{"kind": "pearson"}`).
+`coregionalization`, `residuals` (`{"kind": "pearson"}`). For models fitted as one
+sub-model per output the result is `{"outputs": {outputName: value}}`.
+
+Structured parameters (`x`, `options`, `grid`, `blocks`, `taus`, ...) may also be
+given as JSON text (CLI / REST). A model is stored only when fitting and its report
+succeed. Cross-validation, bootstrap and diagnostics use the data a model was fitted
+to, even if its dataset was replaced later. Input columns and outputs of the
+variogram and quantile commands may be given by name; rows with an unobserved
+output are skipped.
 
 The class auto-registers in `LabRegistry` as
 `regression`.

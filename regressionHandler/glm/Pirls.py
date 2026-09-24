@@ -142,25 +142,34 @@ def pirls(x: np.ndarray, y: np.ndarray, w: np.ndarray, family: Family, penalty: 
                        edfTerms=edfTerms, iterations=it, converged=converged, rank=sol.rank)
 
 
-def smoothingCriterion(res: PirlsResult, family: Family, n: int, criterion: str, gamma: float = 1.0) -> float:
-    """GCV = n D / (n - gamma edf)^2, or UBRE = D / n - 1 + 2 gamma edf / n (phi = 1)."""
+def smoothingCriterion(res: PirlsResult, family: Family, n: int, criterion: str, gamma: float = 1.0,
+                       scale: float = 1.0) -> float:
+    """GCV = n D / (n - gamma edf)^2, or UBRE = D / n - phi + 2 gamma phi edf / n (known scale phi)."""
     if criterion == "gcv":
         return n * res.deviance / max(n - gamma * res.edf, 1e-8) ** 2
     if criterion == "ubre":
-        return res.deviance / n - 1.0 + 2.0 * gamma * res.edf / n
+        return res.deviance / n - scale + 2.0 * gamma * scale * res.edf / n
     raise ValueError("criterion must be 'gcv' or 'ubre'")
 
 
 def selectSmoothing(x, y, w, family: Family, penalties: list[np.ndarray], criterion: str = "auto",
                     offset=None, logLambdaBounds=(-12.0, 12.0), gamma: float = 1.0, maxIter: int = 100,
-                    fixed: Optional[list] = None) -> tuple[np.ndarray, PirlsResult, float]:
+                    fixed: Optional[list] = None, scale: Optional[float] = None
+                    ) -> tuple[np.ndarray, PirlsResult, float]:
     """Choose lambda_j for S = sum lambda_j S_j by GCV / UBRE; returns (lambdas, fit, score).
 
-    ``fixed`` may give a value per penalty (None entries are optimized).
+    ``fixed`` may give a value per penalty (None entries are optimized). UBRE
+    needs a known scale: 1 for known-scale families, else ``scale``.
     """
     n = x.shape[0]
     if criterion == "auto":
         criterion = "ubre" if family.scaleKnown else "gcv"
+    if criterion == "ubre":
+        if family.scaleKnown:
+            scale = 1.0
+        elif scale is None or not np.isfinite(scale) or scale <= 0:
+            raise ValueError("UBRE needs a known scale: use GCV or give a numeric dispersion for this family")
+    scale = 1.0 if scale is None else float(scale)
     k = len(penalties)
     fixed = [None] * k if fixed is None else list(fixed)
     free = [j for j in range(k) if fixed[j] is None]
@@ -183,14 +192,14 @@ def selectSmoothing(x, y, w, family: Family, penalties: list[np.ndarray], criter
 
     def score(logL):
         try:
-            return smoothingCriterion(fitAt(np.atleast_1d(logL)), family, n, criterion, gamma)
+            return smoothingCriterion(fitAt(np.atleast_1d(logL)), family, n, criterion, gamma, scale)
         except np.linalg.LinAlgError:
             return np.inf
 
     lo, hi = logLambdaBounds
     if not free:
         res = fitAt(np.zeros(0))
-        return lambdas(np.zeros(0)), res, smoothingCriterion(res, family, n, criterion, gamma)
+        return lambdas(np.zeros(0)), res, smoothingCriterion(res, family, n, criterion, gamma, scale)
     if len(free) == 1:
         grid = np.linspace(lo, hi, 25)
         vals = np.array([score(np.array([g])) for g in grid])
@@ -222,4 +231,4 @@ def selectSmoothing(x, y, w, family: Family, penalties: list[np.ndarray], criter
             if before - best <= 1e-12 * abs(before):
                 break
     final = fitAt(logL)
-    return lambdas(logL), final, smoothingCriterion(final, family, n, criterion, gamma)
+    return lambdas(logL), final, smoothingCriterion(final, family, n, criterion, gamma, scale)

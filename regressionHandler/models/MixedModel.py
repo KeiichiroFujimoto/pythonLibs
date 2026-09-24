@@ -9,8 +9,11 @@ costs O(n p^2 + G q^3). The relative Cholesky factor L is optimized with
 bounds (diagonal >= 0, allowing a zero variance component on the boundary).
 
 Predictions for rows whose group was seen in training include the group's
-BLUP; unseen groups get the population mean. Prediction variances add
-sigma^2 (known group) or sigma^2 (1 + z^T L L^T z) (new group).
+BLUP; unseen groups get the population mean. Variances of a known group are
+Henderson's prediction-error variance (conditional covariance of the group
+effects plus the fixed-effect uncertainty including the beta / BLUP cross
+term); a new group adds the prior sigma^2 z^T L L^T z; prediction variances
+also add sigma^2.
 
 References:
     Laird & Ware (1982) Biometrics 38(4).
@@ -102,8 +105,10 @@ class MixedModel(SurrogateModelBase):
         groups = x[:, self._gc()]
         self._levels, gidx = np.unique(groups, return_inverse=True)
         gidx = gidx.ravel()
-        self._basis = copy.deepcopy(buildComponent("basis", self.options["basis"])).fit(self._fixedInputs(x))
-        phi = self._basis.transform(self._fixedInputs(x))
+        fixed = self._fixedInputs(x)
+        # only the group column given: intercept-only fixed part
+        self._basis = copy.deepcopy(buildComponent("basis", self.options["basis"])).fit(fixed) if fixed.shape[1] else None
+        phi = self._fixedDesign(x)
         z = self._zRows(x)
         self._n, self._p = phi.shape
         self._q = z.shape[1]
@@ -143,9 +148,12 @@ class MixedModel(SurrogateModelBase):
         np.add.at(ztr, gidx, z * resid[:, None])
         c = np.einsum("ij,gj->gi", l.T, ztr)
         self._blup = np.einsum("ij,gj->gi", l, np.linalg.solve(m, c[:, :, None])[:, :, 0])
+        # conditional covariance of each group's effects given the data: sigma2 L M_g^-1 L^T
+        self._condCov = self._sigma2 * np.einsum("ij,gjk,lk->gil", l, np.linalg.inv(m), l)
+        # BLUP sensitivity to beta, d b_g / d beta = -L M_g^-1 L^T Z_g^T X_g: gives the beta / b_g cross covariance
+        self._blupX = np.einsum("ij,gjp->gip", l, np.linalg.solve(m, np.einsum("ij,gjp->gip", l.T, self._ztx)))
         self._logLik = -0.5 * self._objective(self._theta)
-        self.result = FitResult(parameterNames=self._basis.termNames(
-            [f for j, f in enumerate(self.featureNames) if j != self._gc()]), params=self._beta[:, None],
+        self.result = FitResult(parameterNames=self._termNames(), params=self._beta[:, None],
             covariance=self._covBeta[None], dofResid=float(n - p), sigma2=np.array([self._sigma2]),
             outputNames=self.outputNames)
 
@@ -157,8 +165,18 @@ class MixedModel(SurrogateModelBase):
         known = self._levels[pos] == g
         return pos, known
 
+    def _fixedDesign(self, x) -> np.ndarray:
+        if self._basis is None:
+            return np.ones((x.shape[0], 1))
+        return self._basis.transform(self._fixedInputs(x))
+
+    def _termNames(self) -> list:
+        if self._basis is None:
+            return ["1"]
+        return self._basis.termNames([f for j, f in enumerate(self.featureNames) if j != self._gc()])
+
     def _predictValues(self, x: np.ndarray) -> np.ndarray:
-        mean = self._basis.transform(self._fixedInputs(x)) @ self._beta
+        mean = self._fixedDesign(x) @ self._beta
         pos, known = self._groupIndex(x)
         z = self._zRows(x)
         mean = mean + np.where(known, np.sum(z * self._blup[pos], axis=1), 0.0)
@@ -168,15 +186,23 @@ class MixedModel(SurrogateModelBase):
         """Fixed-effect (population-level) prediction, ignoring group effects."""
         self._checkTrained()
         xv = self._validX(x)
-        return self._basis.transform(self._fixedInputs(xv)) @ self._beta
+        return self._fixedDesign(xv) @ self._beta
 
     def _predictVariances(self, x: np.ndarray, kind: str) -> np.ndarray:
-        phi = self._basis.transform(self._fixedInputs(x))
-        var = np.einsum("ij,jk,ik->i", phi, self._covBeta, phi)
+        phi = self._fixedDesign(x)
+        pos, known = self._groupIndex(x)
+        z = self._zRows(x)
+        # known groups: Henderson prediction-error variance of x^T beta + z^T b_g, which includes the
+        # beta / BLUP cross covariance, (x - A_g^T z)^T Cov(beta) (x - A_g^T z) + z^T condCov_g z;
+        # new groups: Cov(beta) plus the full prior of b
+        phiEff = np.where(known[:, None], phi - np.einsum("ij,ijp->ip", z, self._blupX[pos]), phi)
+        var = np.einsum("ij,jk,ik->i", phiEff, self._covBeta, phiEff)
+        groupVar = np.where(known, np.einsum("ij,ijk,ik->i", z, self._condCov[pos], z),
+                            np.einsum("ij,jk,ik->i", z, self._psi, z))
         if kind == "prediction":
-            _, known = self._groupIndex(x)
-            z = self._zRows(x)
-            var = var + self._sigma2 + np.where(known, 0.0, np.einsum("ij,jk,ik->i", z, self._psi, z))
+            var = var + self._sigma2 + groupVar
+        else:
+            var = var + np.where(known, groupVar, 0.0)
         return var[:, None]
 
     def _effectiveParams(self):
@@ -202,14 +228,16 @@ class MixedModel(SurrogateModelBase):
         return {float(g): b.tolist() for g, b in zip(self._levels, self._blup)}
 
     def _stateToDict(self) -> dict:
-        return {"basis": self._basis.toDict(), "levels": self._levels.tolist(), "beta": self._beta.tolist(),
+        return {"basis": None if self._basis is None else self._basis.toDict(), "condCov": self._condCov.tolist(),
+                "blupX": self._blupX.tolist(),
+                "levels": self._levels.tolist(), "beta": self._beta.tolist(),
                 "covBeta": self._covBeta.tolist(), "psi": self._psi.tolist(), "sigma2": self._sigma2,
                 "blup": self._blup.tolist(), "theta": self._theta.tolist(), "logLik": self._logLik,
                 "n": self._n, "p": self._p, "q": self._q}
 
     def _stateFromDict(self, state: dict) -> None:
-        self._basis = buildComponent("basis", state["basis"])
-        for k in ("levels", "beta", "covBeta", "psi", "blup", "theta"):
+        self._basis = None if state["basis"] is None else buildComponent("basis", state["basis"])
+        for k in ("levels", "beta", "covBeta", "psi", "blup", "theta", "condCov", "blupX"):
             setattr(self, "_" + k, np.array(state[k], dtype=float))
         self._sigma2, self._logLik = float(state["sigma2"]), float(state["logLik"])
         self._n, self._p, self._q = int(state["n"]), int(state["p"]), int(state["q"])

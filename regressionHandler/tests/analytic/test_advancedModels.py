@@ -191,6 +191,35 @@ def test_mixedModelMatchesDenseFormulas():
     blup = np.kron(np.eye(12), psi) @ Z.T @ Vi @ r
     np.testing.assert_allclose(m._blup.ravel(), blup, atol=1e-8)
     np.testing.assert_allclose(m._covBeta, np.linalg.inv(X.T @ Vi @ X), rtol=1e-8)
+    # known group: Henderson prediction-error variance k^T C^-1 k from the mixed-model equations
+    assert np.linalg.eigvalsh(psi).min() > 0
+    s2 = m._sigma2
+    C = np.block([[X.T @ X, X.T @ Z], [Z.T @ X, Z.T @ Z + s2 * np.kron(np.eye(12), np.linalg.inv(psi))]]) / s2
+    xq = 0.3
+    k = np.zeros(26)
+    k[:2] = [1.0, xq]
+    k[2 + 2 * 5:2 + 2 * 5 + 2] = [1.0, xq]
+    pev = k @ np.linalg.solve(C, k)
+    ci = m.predictVariances(np.array([[xq, 5.0]]), kind="confidence")[0, 0]
+    assert ci == pytest.approx(pev, rel=1e-8)
+    assert m.predictVariances(np.array([[xq, 5.0]]), kind="prediction")[0, 0] == pytest.approx(pev + s2, rel=1e-8)
+    # unseen group: population mean, variance adds the prior of the group effects
+    z = np.array([1.0, xq])
+    newVar = m.predictVariances(np.array([[xq, 99.0]]), kind="prediction")[0, 0]
+    assert newVar == pytest.approx(k[:2] @ m._covBeta @ k[:2] + z @ psi @ z + s2, rel=1e-8)
+    assert np.ravel(m.predict(np.array([[xq, 99.0]])))[0] == pytest.approx(beta[0] + beta[1] * xq, rel=1e-10)
+
+
+def test_mixedModelInterceptOnly():
+    rng = np.random.default_rng(3)
+    g = np.repeat(np.arange(10), 5).astype(float)
+    y = 2.0 + rng.normal(0, 1, 10)[g.astype(int)] + 0.5 * rng.standard_normal(g.size)
+    m = MixedModel(groupColumn=0).fit(g[:, None], y)
+    # balanced one-way layout: the GLS mean is the grand mean
+    assert m._beta[0] == pytest.approx(y.mean(), rel=1e-10)
+    assert m.result.parameterNames == ["1"]
+    m2 = MixedModel.fromDict(m.toDict())
+    np.testing.assert_allclose(m2.predictVariances(g[:3, None]), m.predictVariances(g[:3, None]), rtol=1e-12)
 
 
 # ---------------------------------------------------------------- shape constraints

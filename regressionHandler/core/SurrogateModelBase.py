@@ -31,7 +31,8 @@ from typing import ClassVar, Optional
 import numpy as np
 
 from pythonLibs.regressionHandler.core.FitMetrics import FitMetrics
-from pythonLibs.regressionHandler.core.Serialization import compactArrays, expandArrays
+from pythonLibs.regressionHandler.core.Serialization import (compactArrays, decodeNonFinite, encodeNonFinite,
+                                                             expandArrays)
 from pythonLibs.regressionHandler.core.FitResult import FitResult
 from pythonLibs.regressionHandler.core.InputValidation import asFeatureMatrix, asOutputMatrix, asWeights
 from pythonLibs.regressionHandler.core.OptionsDictionary import OptionsDictionary
@@ -301,13 +302,27 @@ class SurrogateModelBase(ABC):
         variance is w^T Cov w of the latent posterior at the block points, i.e.
         the block-Kriging variance of the block average.
         """
+        self._checkTrained()
+        if isinstance(blocks, dict):
+            blocks = [blocks]
+        if not len(blocks):
+            raise ValueError("at least one block is required")
+        if int(nPerDim) < 1:
+            raise ValueError("nPerDim must be >= 1")
+        if weights is not None and len(weights) != len(blocks):
+            raise ValueError("give one weight list (or None) per block")
         means, variances, pointsOut = [], [], []
         for b, block in enumerate(blocks):
-            pts = self._blockPoints(block, nPerDim)
-            w = np.full(pts.shape[0], 1.0 / pts.shape[0]) if weights is None or weights[b] is None \
-                else np.asarray(weights[b], dtype=float) / float(np.sum(weights[b]))
-            if w.size != pts.shape[0]:
-                raise ValueError("block weights must match the number of block points")
+            pts = self._blockPoints(block, int(nPerDim))
+            if weights is None or weights[b] is None:
+                w = np.full(pts.shape[0], 1.0 / pts.shape[0])
+            else:
+                w = np.asarray(weights[b], dtype=float).ravel()
+                if w.size != pts.shape[0]:
+                    raise ValueError("block weights must match the number of block points")
+                if not np.all(np.isfinite(w)) or np.any(w < 0) or not w.sum() > 0:
+                    raise ValueError("block weights must be finite, non-negative and not all zero")
+                w = w / w.sum()
             means.append(w @ self.predictValues(pts))
             cov = self.predictCovariance(pts, "confidence")
             variances.append(np.einsum("i,jik,k->j", w, cov, w))
@@ -321,11 +336,16 @@ class SurrogateModelBase(ABC):
             if lo.size != self.nx or hi.size != self.nx or np.any(hi < lo):
                 raise ValueError("block box needs lower <= upper with one entry per input")
             k = int(block.get("n", nPerDim))
+            if k < 1:
+                raise ValueError("block grid size n must be >= 1")
             axes = [lo[j] + (np.arange(k) + 0.5) * (hi[j] - lo[j]) / k if hi[j] > lo[j] else np.array([lo[j]])
                     for j in range(self.nx)]
             grids = np.meshgrid(*axes, indexing="ij")
             return np.column_stack([g.ravel() for g in grids])
-        return self._validX(block)
+        pts = self._validX(block)
+        if pts.shape[0] < 1:
+            raise ValueError("a block needs at least one point")
+        return pts
 
     def predictGradient(self, x) -> np.ndarray:
         """(n, nx, ny) gradient of every output."""
@@ -364,9 +384,24 @@ class SurrogateModelBase(ABC):
         opts = ", ".join(f"{k}={_short(v)}" for k, v in self.options.nonDefault().items())
         return f"{self.registryName or type(self).__name__}({opts})"
 
+    @property
+    def nTrain(self) -> int:
+        """Number of training rows (also known after loading a model saved without its data)."""
+        if self.xt is not None:
+            return int(self.xt.shape[0])
+        return int(max((m.nSamples for m in self.metrics), default=0))
+
+    def _eachOutput(self, method: str, *args, **kwargs) -> dict:
+        """{outputName: sub-model result} for models fitted as one sub-model per output."""
+        return {name: getattr(m, method)(*args, **kwargs) for name, m in zip(self.outputNames, self._subModels)}
+
+    def _requireTrainingData(self) -> None:
+        if self.xt is None:
+            raise ValueError("this needs the training data; the model was saved without it")
+
     def summary(self) -> str:
         self._checkTrained()
-        lines = [f"Model: {self.describe()}", f"Training points: {self.xt.shape[0]}, inputs: {self.nx}, "
+        lines = [f"Model: {self.describe()}", f"Training points: {self.nTrain}, inputs: {self.nx}, "
                  f"outputs: {self.ny}"]
         for name, m in zip(self.outputNames, self.metrics):
             lines.append(f"  {name}: R2={m.rSquared:.6g}  adjR2={m.adjRSquared:.6g}  RMSE={m.rmse:.6g}  "
@@ -433,12 +468,12 @@ class SurrogateModelBase(ABC):
     def save(self, filePath: str, includeTrainingData: bool = True, compact: bool = True) -> None:
         """Write JSON; ``compact`` (default) stores large arrays as compressed binary blocks inside it."""
         with open(filePath, "w", encoding="utf-8") as f:
-            json.dump(self.toDict(includeTrainingData, compact), f)
+            json.dump(encodeNonFinite(self.toDict(includeTrainingData, compact)), f, allow_nan=False)
 
     @staticmethod
     def load(filePath: str) -> "SurrogateModelBase":
         with open(filePath, "r", encoding="utf-8") as f:
-            return SurrogateModelBase.fromDict(json.load(f))
+            return SurrogateModelBase.fromDict(decodeNonFinite(json.load(f)))
 
 
 def _short(v) -> str:

@@ -355,13 +355,16 @@ def larsOrder(x: np.ndarray, y: np.ndarray, maxSteps: int) -> list[int]:
     n, p = x.shape
     active: list[int] = []
     mu = np.zeros(n)
-    for _ in range(min(maxSteps, p, n - 1)):
+    limit = min(maxSteps, p, n - 1)
+    while len(active) < limit:
         c = x.T @ (y - mu)
         inactive = np.array([j for j in range(p) if j not in active], dtype=int)
         if inactive.size == 0:
             break
         if not active:
             active.append(int(inactive[np.argmax(np.abs(c[inactive]))]))
+            if len(active) >= limit:
+                break
         cMax = float(np.max(np.abs(c[active])))
         if cMax <= 1e-14 * max(1.0, float(np.linalg.norm(y))):
             break

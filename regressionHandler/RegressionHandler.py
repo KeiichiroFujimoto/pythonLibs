@@ -43,6 +43,23 @@ from pythonLibs.regressionHandler.sampling.Problems import PROBLEMS, getProblem
 from pythonLibs.regressionHandler.sampling.Sampling import fullFactorial, latinHypercube, randomSampling, sobolLike
 
 _CATEGORY = "regression"
+_MISSING = object()
+
+
+def _parseJson(value):
+    """Structured parameters (dicts / lists) may arrive as JSON text from the CLI or REST."""
+    if isinstance(value, str) and value.lstrip()[:1] in ("{", "["):
+        return json.loads(value)
+    return value
+
+
+def _finiteRows(*arrays) -> np.ndarray:
+    """Rows where every given array (n,) or (n, k) is finite."""
+    ok = np.ones(arrays[0].shape[0], dtype=bool)
+    for a in arrays:
+        a = np.asarray(a, dtype=float)
+        ok &= np.all(np.isfinite(a.reshape(a.shape[0], -1)), axis=1)
+    return ok
 
 
 class RegressionDataset:
@@ -167,12 +184,59 @@ class RegressionHandler(toolBaseSecured):
             raise ValueError("model must be trained")
         self._models[modelName] = model
         self._modelData[modelName] = dataName
+        self._selections.pop(modelName, None)
+
+    def _register(self, modelName: str, model: SurrogateModelBase, dataName: Optional[str]) -> dict:
+        """Store a fitted model and return its report; nothing changes if the report fails."""
+        previous = [(store, store.get(modelName, _MISSING))
+                    for store in (self._models, self._modelData, self._selections)]
+        self._models[modelName] = model
+        self._modelData[modelName] = dataName
+        self._selections.pop(modelName, None)
+        try:
+            return self._modelReport(modelName)
+        except Exception:
+            for store, value in previous:
+                if value is _MISSING:
+                    store.pop(modelName, None)
+                else:
+                    store[modelName] = value
+            raise
+
+    def _columnIndices(self, ds: RegressionDataset, columns) -> Optional[list]:
+        """Input columns given by index or by feature name -> indices."""
+        if columns is None:
+            return None
+        out = []
+        for c in _parseJson(columns):
+            if isinstance(c, str) and not c.lstrip("-").isdigit():
+                if c not in ds.featureNames:
+                    raise KeyError(f"unknown input {c!r}; available: {ds.featureNames}")
+                out.append(ds.featureNames.index(c))
+            else:
+                j = int(c)
+                if not -ds.x.shape[1] <= j < ds.x.shape[1]:
+                    raise IndexError(f"input column {j} out of range")
+                out.append(j % ds.x.shape[1])
+        return out
+
+    @staticmethod
+    def _outputIndex(ds: RegressionDataset, output) -> int:
+        if isinstance(output, str) and not output.lstrip("-").isdigit():
+            if output not in ds.outputNames:
+                raise KeyError(f"unknown output {output!r}; available: {ds.outputNames}")
+            return ds.outputNames.index(output)
+        j = int(output)
+        if not -ds.y.shape[1] <= j < ds.y.shape[1]:
+            raise IndexError(f"output {j} out of range")
+        return j % ds.y.shape[1]
 
     # ------------------------------------------------------------------ data
     @secure_expose(alias="setData", category=_CATEGORY)
     def setData(self, x: list, y: list, dataName: str = "default", weights: Optional[list] = None,
                 featureNames: Optional[list] = None, outputNames: Optional[list] = None) -> dict:
         """Register a dataset from in-memory arrays."""
+        x, y, weights = _parseJson(x), _parseJson(y), _parseJson(weights)
         ds = RegressionDataset(x, y, weights, featureNames, outputNames)
         self._datasets[dataName] = ds
         return toJsonable({"dataName": dataName, **ds.summary()})
@@ -239,13 +303,9 @@ class RegressionHandler(toolBaseSecured):
                  options: Optional[dict] = None) -> dict:
         """Fit a model to a dataset and store it under modelName."""
         ds = self.getDataset(dataName)
-        if isinstance(model, str) and model.lstrip().startswith("{"):
-            model = json.loads(model)  # dict specs arriving as text from CLI / REST
-        m = createModel(copy.deepcopy(model), **(options or {}))
+        m = createModel(copy.deepcopy(_parseJson(model)), **(_parseJson(options) or {}))
         m.fit(ds.x, ds.y, ds.weights, ds.featureNames, ds.outputNames)
-        self._models[modelName] = m
-        self._modelData[modelName] = dataName
-        return self._modelReport(modelName)
+        return self._register(modelName, m, dataName)
 
     @secure_expose(alias="listModels", category=_CATEGORY)
     def listModels(self) -> dict:
@@ -264,6 +324,7 @@ class RegressionHandler(toolBaseSecured):
     @secure_expose(alias="predict", category=_CATEGORY)
     def predict(self, modelName: str, x: list, level: Optional[float] = None, kind: str = "prediction") -> dict:
         """Predict outputs (optionally with a confidence / prediction interval)."""
+        x = _parseJson(x)
         m = self.getModel(modelName)
         if level is None:
             return toJsonable({"modelName": modelName, "outputNames": m.outputNames,
@@ -274,6 +335,7 @@ class RegressionHandler(toolBaseSecured):
     @secure_expose(alias="predictDerivatives", category=_CATEGORY)
     def predictDerivatives(self, modelName: str, x: list, kx: Optional[int] = None) -> dict:
         """Derivatives dy/dx_kx, or the full gradient (n, nx, ny) when kx is omitted."""
+        x = _parseJson(x)
         m = self.getModel(modelName)
         if kx is None:
             return toJsonable({"modelName": modelName, "featureNames": m.featureNames,
@@ -284,14 +346,7 @@ class RegressionHandler(toolBaseSecured):
     def crossValidateModel(self, modelName: str, nFolds: int = 5, method: str = "refit", seed: int = 0) -> dict:
         """k-fold / leave-one-out cross-validation of a fitted model's configuration."""
         m = self.getModel(modelName)
-        dataName = self._modelData.get(modelName)
-        if dataName in self._datasets:
-            ds = self._datasets[dataName]
-            x, y, w = ds.x, ds.y, ds.weights
-        elif m.xt is not None:
-            x, y, w = m.xt, m.yt, m.wt
-        else:
-            raise ValueError("no training data available for this model")
+        x, y, w = self._trainingData(modelName)
         cv = crossValidate(m, x, y, w, nFolds=nFolds, method=method, seed=seed)
         return toJsonable({"modelName": modelName, "outputNames": m.outputNames, **cv.toDict()})
 
@@ -305,10 +360,9 @@ class RegressionHandler(toolBaseSecured):
     @secure_expose(alias="loadModel", category=_CATEGORY)
     def loadModel(self, filePath: str, modelName: str) -> dict:
         """Load a JSON model saved by saveModel."""
-        self._models[modelName] = SurrogateModelBase.load(filePath)
-        self._modelData[modelName] = None
+        report = self._register(modelName, SurrogateModelBase.load(filePath), None)
         self.addExecutionInputFiles(file_paths=[filePath])
-        return self._modelReport(modelName)
+        return report
 
     @secure_expose(alias="deleteModel", category=_CATEGORY)
     def deleteModel(self, modelName: str) -> dict:
@@ -316,22 +370,24 @@ class RegressionHandler(toolBaseSecured):
         self.getModel(modelName)
         del self._models[modelName]
         self._modelData.pop(modelName, None)
+        self._selections.pop(modelName, None)
         return {"deleted": modelName}
 
     # ------------------------------------------------------------------ selection
     def _trainingData(self, modelName: str):
+        """The model's own training data (a dataset may have been replaced since), else its dataset."""
         m = self.getModel(modelName)
+        if m.xt is not None:
+            return m.xt, m.yt, m.wt
         dataName = self._modelData.get(modelName)
         if dataName in self._datasets:
             ds = self._datasets[dataName]
-            return ds.x, ds.y, ds.weights
-        if m.xt is not None:
-            return m.xt, m.yt, m.wt
+            if ds.x.shape[1] == m.nx and ds.y.shape[1] == m.ny:
+                return ds.x, ds.y, ds.weights
         raise ValueError("no training data available for this model")
 
     def _storeSelection(self, modelName, dataName, selection) -> dict:
-        self._models[modelName] = selection.bestModel
-        self._modelData[modelName] = dataName
+        self._register(modelName, selection.bestModel, dataName)
         self._selections[modelName] = selection
         return toJsonable({"modelName": modelName, **selection.toDict(), "summary": selection.summary()})
 
@@ -341,8 +397,8 @@ class RegressionHandler(toolBaseSecured):
                       modelName: Optional[str] = None, seed: int = 0) -> dict:
         """Rank candidate models by CV / AICc / BIC; optionally store the best as modelName."""
         ds = self.getDataset(dataName)
-        cands = candidates or defaultCandidates(ds.x, ds.y)
-        cands = [json.loads(c) if isinstance(c, str) and c.lstrip().startswith("{") else c for c in cands]
+        cands = _parseJson(candidates) or defaultCandidates(ds.x, ds.y)
+        cands = [_parseJson(c) for c in cands]
         sel = ModelSelector(cands, criterion, nFolds, seed, oneStandardError, nJobs).run(
             ds.x, ds.y, ds.weights, ds.featureNames, ds.outputNames)
         if modelName:
@@ -361,9 +417,7 @@ class RegressionHandler(toolBaseSecured):
                   nJobs: int = 1) -> dict:
         """Grid-search model options by cross-validation and keep the best."""
         ds = self.getDataset(dataName)
-        if isinstance(model, str) and model.lstrip().startswith("{"):
-            model = json.loads(model)
-        sel = tuneHyperparameters(model, grid, ds.x, ds.y, ds.weights, nFolds=nFolds, nJobs=nJobs)
+        sel = tuneHyperparameters(_parseJson(model), _parseJson(grid), ds.x, ds.y, ds.weights, nFolds=nFolds, nJobs=nJobs)
         return self._storeSelection(modelName, dataName, sel)
 
     @secure_expose(alias="stepwiseSelect", category=_CATEGORY)
@@ -371,10 +425,9 @@ class RegressionHandler(toolBaseSecured):
                        criterion: str = "aicc", direction: str = "both") -> dict:
         """Stepwise selection of basis terms (default: full quadratic) by AICc / BIC / LOO."""
         ds = self.getDataset(dataName)
-        res = stepwiseSelect(ds.x, ds.y, basis=basis, weights=ds.weights, criterion=criterion, direction=direction,
+        res = stepwiseSelect(ds.x, ds.y, basis=_parseJson(basis), weights=ds.weights, criterion=criterion, direction=direction,
                              featureNames=ds.featureNames, outputNames=ds.outputNames)
-        self.addModel(modelName, res.model, dataName)
-        report = self._modelReport(modelName)
+        report = self._register(modelName, res.model, dataName)
         report["stepwise"] = toJsonable(res.toDict())
         return report
 
@@ -391,6 +444,7 @@ class RegressionHandler(toolBaseSecured):
     def bootstrapModel(self, modelName: str, x: Optional[list] = None, nBoot: int = 200, method: str = "residual",
                        level: float = 0.95, includeNoise: bool = False, nJobs: int = 1, seed: int = 0) -> dict:
         """Bootstrap percentile intervals for predictions (at x) and parameters."""
+        x = _parseJson(x)
         m = self.getModel(modelName)
         xt, yt, wt = self._trainingData(modelName)
         res = bootstrap(m, xt, yt, xNew=x, weights=wt, nBoot=nBoot, method=method, level=level, seed=seed,
@@ -402,6 +456,7 @@ class RegressionHandler(toolBaseSecured):
     def generateSamples(self, nSamples: int, xlimits: list, method: str = "lhs", criterion: str = "maximin",
                         seed: int = 0) -> dict:
         """Design of experiments: 'lhs', 'fullFactorial' (nSamples = levels per input), 'random', 'halton'."""
+        xlimits = _parseJson(xlimits)
         if method == "lhs":
             pts = latinHypercube(nSamples, xlimits, criterion=criterion, seed=seed)
         elif method == "fullFactorial":
@@ -443,21 +498,27 @@ class RegressionHandler(toolBaseSecured):
             raise ValueError(f"aspect {aspect!r} is not available for {m.registryName}; "
                              f"available: {self._aspectsOf(m)}")
         attr = getattr(type(m), aspect)
-        opts = dict(aspectOptions or {})
+        opts = dict(_parseJson(aspectOptions) or {})
         if isinstance(attr, property):
             if opts:
                 raise ValueError(f"{aspect} takes no options")
-            value = getattr(m, aspect)
         else:
             unknown = set(opts) - self._ASPECT_KWARGS.get(aspect, set())
             if unknown:
                 raise ValueError(f"unsupported options for {aspect}: {sorted(unknown)}")
-            value = getattr(m, aspect)(**opts)
+
+        def get(obj):
+            return getattr(obj, aspect) if isinstance(attr, property) else getattr(obj, aspect)(**opts)
+
+        # models fitted as one sub-model per output: the aspect of each output
+        subs = getattr(m, "_subModels", None)
+        value = get(m) if subs is None else {"outputs": {n: get(s) for n, s in zip(m.outputNames, subs)}}
         return toJsonable({"modelName": modelName, "aspect": aspect, "value": value})
 
     @secure_expose(alias="predictCovariance", category=_CATEGORY)
     def predictCovariance(self, modelName: str, x: list, kind: str = "confidence") -> dict:
         """Joint posterior covariance of the predictions at x, one (m, m) matrix per output."""
+        x = _parseJson(x)
         m = self.getModel(modelName)
         return toJsonable({"modelName": modelName, "outputNames": m.outputNames, "kind": kind,
                            "mean": m.predictValues(x), "covariance": m.predictCovariance(x, kind)})
@@ -465,6 +526,7 @@ class RegressionHandler(toolBaseSecured):
     @secure_expose(alias="simulate", category=_CATEGORY)
     def simulate(self, modelName: str, x: list, nSamples: int = 1, seed: int = 0, kind: str = "confidence") -> dict:
         """Conditional simulation: nSamples joint draws (nSamples, m, ny) from the posterior at x."""
+        x = _parseJson(x)
         m = self.getModel(modelName)
         return toJsonable({"modelName": modelName, "outputNames": m.outputNames,
                            "samples": m.simulate(x, nSamples, seed, kind)})
@@ -474,13 +536,14 @@ class RegressionHandler(toolBaseSecured):
                      nPerDim: int = 8) -> dict:
         """Mean and variance of block averages (block Kriging for models with a joint covariance)."""
         m = self.getModel(modelName)
-        res = m.predictBlock(blocks, blockWeights, nPerDim)
+        res = m.predictBlock(_parseJson(blocks), _parseJson(blockWeights), nPerDim)
         return toJsonable({"modelName": modelName, "outputNames": m.outputNames, "mean": res["mean"],
                            "variance": res["variance"], "nPoints": [len(p) for p in res["points"]]})
 
     @secure_expose(alias="predictTerms", category=_CATEGORY)
     def predictTerms(self, modelName: str, x: list) -> dict:
         """Centred partial effects (and standard errors) of every term of an additive model."""
+        x = _parseJson(x)
         m = self.getModel(modelName)
         if not hasattr(m, "predictTerms"):
             raise ValueError(f"{m.registryName} has no additive terms")
@@ -492,7 +555,7 @@ class RegressionHandler(toolBaseSecured):
                             nSamples: int = 4096, seed: int = 0, output: int = 0, nBoot: int = 200) -> dict:
         """Sobol indices (exact for polynomial chaos models, Monte Carlo otherwise) of one output."""
         m = self.getModel(modelName)
-        res = sobolIndices(m, xlimits=xlimits, method=method, nSamples=nSamples, seed=seed, output=output,
+        res = sobolIndices(m, xlimits=_parseJson(xlimits), method=method, nSamples=nSamples, seed=seed, output=output,
                            nBoot=nBoot)
         return toJsonable({"modelName": modelName, "output": m.outputNames[output], **res.toDict(),
                            "summary": res.summary()})
@@ -505,16 +568,19 @@ class RegressionHandler(toolBaseSecured):
                            variogramName: Optional[str] = None) -> dict:
         """Binned empirical semivariogram of an output (or of a model's residuals)."""
         ds = self.getDataset(dataName)
-        coords = ds.x if columns is None else ds.x[:, [int(c) for c in columns]]
-        z = ds.y[:, output]
+        cols = self._columnIndices(ds, columns)
+        out = self._outputIndex(ds, output)
+        coords = ds.x if cols is None else ds.x[:, cols]
+        z = ds.y[:, out]
         if residualsOf:
-            z = z - self.getModel(residualsOf).predictValues(ds.x)[:, output]
+            z = z - self.getModel(residualsOf).predictValues(ds.x)[:, out]
         ok = np.isfinite(z)
-        ev = empiricalVariogram(coords[ok], z[ok], nBins=nBins, maxDistance=maxDistance, binEdges=binEdges,
-                                estimator=estimator, direction=direction, tolerance=tolerance, distance=distance)
+        ev = empiricalVariogram(coords[ok], z[ok], nBins=nBins, maxDistance=maxDistance,
+                                binEdges=_parseJson(binEdges), estimator=estimator, direction=_parseJson(direction),
+                                tolerance=tolerance, distance=distance)
         if variogramName:
-            self._variograms[variogramName] = {"variogram": ev, "dataName": dataName, "columns": columns,
-                                               "output": output}
+            self._variograms[variogramName] = {"variogram": ev, "dataName": dataName, "columns": cols,
+                                               "output": out, "residualsOf": residualsOf}
         return toJsonable({"variogramName": variogramName, **ev.toDict()})
 
     @secure_expose(alias="fitVariogram", category=_CATEGORY)
@@ -532,9 +598,15 @@ class RegressionHandler(toolBaseSecured):
             opts = fit.krigingOptions()
             cols = stored["columns"]
             if cols is not None:
-                opts["spatialColumns"] = [int(c) for c in cols]
-            out["kriging"] = self.fitModel(modelName, {"type": "kriging", "poly": "constant", **opts},
-                                           stored["dataName"])
+                opts["spatialColumns"] = list(cols)
+            # the Kriging model is fitted to the variogram's own output on its observed rows
+            ds = self.getDataset(stored["dataName"])
+            j = stored["output"]
+            ok = _finiteRows(ds.y[:, j])
+            m = createModel({"type": "kriging", "poly": "constant", **opts})
+            m.fit(ds.x[ok], ds.y[ok][:, [j]], None if ds.weights is None else ds.weights[ok], ds.featureNames,
+                  [ds.outputNames[j]])
+            out["kriging"] = self._register(modelName, m, stored["dataName"])
         else:
             out["krigingOptions"] = fit.krigingOptions() if variogramModel != "cubic" else None
         return toJsonable(out)
@@ -545,22 +617,30 @@ class RegressionHandler(toolBaseSecured):
         """Quantile-regression coefficients beta(tau) for several levels (exact solutions)."""
         from pythonLibs.regressionHandler.models.QuantileModel import quantileProcess
         ds = self.getDataset(dataName)
-        res = quantileProcess(ds.x, ds.y[:, output], taus, basis=basis, weights=ds.weights)
-        return toJsonable({"dataName": dataName, "output": ds.outputNames[output], **res})
+        j = self._outputIndex(ds, output)
+        ok = _finiteRows(ds.y[:, j])
+        res = quantileProcess(ds.x[ok], ds.y[ok, j], _parseJson(taus), basis=_parseJson(basis),
+                              weights=None if ds.weights is None else ds.weights[ok])
+        return toJsonable({"dataName": dataName, "output": ds.outputNames[j], "nUsed": int(ok.sum()), **res})
 
     @secure_expose(alias="fitMultiFidelity", category=_CATEGORY)
     def fitMultiFidelity(self, modelName: str, dataNames: list, options: Optional[dict] = None,
                          output: int = 0) -> dict:
         """Recursive multi-fidelity Kriging from datasets of increasing fidelity (lowest first)."""
         from pythonLibs.regressionHandler.models.MultiFidelityKrigingModel import MultiFidelityKrigingModel
+        dataNames = list(_parseJson(dataNames))
         sets = [self.getDataset(d) for d in dataNames]
         if len({s.x.shape[1] for s in sets}) != 1:
             raise ValueError("all fidelity levels need the same inputs")
-        m = MultiFidelityKrigingModel(**(options or {}))
-        m.fitLevels([s.x for s in sets], [s.y[:, output] for s in sets])
-        self._models[modelName] = m
-        self._modelData[modelName] = None
-        report = self._modelReport(modelName)
+        xs, ys = [], []
+        for s in sets:
+            j = self._outputIndex(s, output)
+            ok = _finiteRows(s.y[:, j])
+            xs.append(s.x[ok])
+            ys.append(s.y[ok, j])
+        m = MultiFidelityKrigingModel(**(_parseJson(options) or {}))
+        m.fitLevels(xs, ys)
+        report = self._register(modelName, m, None)
         report["levels"] = list(dataNames)
         return report
 

@@ -382,7 +382,8 @@ class InverseGaussian(Family):
         return (y - mu) ** 2 / (mu * mu * y)
 
     def logLikelihood(self, y, mu, w, phi):
-        return float(-0.5 * np.sum(w * ((y - mu) ** 2 / (phi * mu * mu * y) + np.log(2.0 * np.pi * phi * y ** 3 / w))))
+        # prior weights scale the whole log density (frequency-weight convention, as for AIC in R)
+        return float(-0.5 * np.sum(w * ((y - mu) ** 2 / (phi * mu * mu * y) + np.log(2.0 * np.pi * phi * y ** 3))))
 
     def validMu(self, mu):
         return bool(np.all(np.isfinite(mu)) and np.all(mu > 0))
@@ -402,7 +403,10 @@ class NegativeBinomial(Family):
         super().__init__(link)
         self.estimateTheta = theta is None
         self.theta = 1.0 if theta is None else float(theta)
-        self.extraParams = 1 if self.estimateTheta else 0
+
+    @property
+    def extraParams(self) -> int:
+        return 1 if self.estimateTheta else 0
 
     def variance(self, mu):
         return np.maximum(mu + mu * mu / self.theta, _TINY)

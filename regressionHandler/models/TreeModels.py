@@ -119,7 +119,10 @@ class RandomForestModel(_TreeEnsemble):
         self._binner = FeatureBinner(self.options["maxBins"]).fit(x)
         codes = self._binner.transform(x)
         mf = _nFeatures(self.options["maxFeatures"], self.nx)
-        g, h = -y, np.ones(n)
+        # centred responses: split gains are compared with a relative threshold, which a large offset in y
+        # would otherwise swamp; the mean is added back to the leaf values
+        yMean = float(np.mean(y))
+        g, h = -(y - yMean), np.ones(n)
         nTrees = self.options["nTrees"]
         rngRows = np.random.default_rng(self.options["seed"])
         rowSets = [rngRows.integers(0, n, n) if self.options["bootstrap"] else np.arange(n) for _ in range(nTrees)]
@@ -139,6 +142,8 @@ class RandomForestModel(_TreeEnsemble):
         else:
             parts = [grow(gr) for gr in groups]
         self._trees = [t for part in parts for t in part]
+        for t in self._trees:
+            t.value += yMean
         self._inbag = np.array([np.bincount(r, minlength=n) for r in rowSets], dtype=np.int32)
         inbag = self._inbag
         preds = np.array([t.predict(x) for t in self._trees])            # (B, n)
@@ -149,6 +154,9 @@ class RandomForestModel(_TreeEnsemble):
         r = y[ok] - self._oob[ok]
         self._oobMse = float(np.mean(r * r)) if ok.any() else float("nan")
         self._oobR2 = 1.0 - self._oobMse / float(np.var(y[ok])) if ok.any() and np.var(y[ok]) > 0 else float("nan")
+        # without out-of-bag rows (bootstrap=False) the noise variance falls back to the in-sample residuals
+        fit = preds.mean(axis=0)
+        self._noiseVar = self._oobMse if np.isfinite(self._oobMse) else float(np.mean((y - fit) ** 2))
 
     def _treePredictions(self, x) -> np.ndarray:
         return np.array([t.predict(x) for t in self._trees])
@@ -170,7 +178,7 @@ class RandomForestModel(_TreeEnsemble):
             # Monte Carlo variance of the tree average (use nTrees of order n for a sharp estimate)
             var[s:s + 512] = np.maximum(ij - correction, np.sum(tc[:, s:s + 512] ** 2, axis=0) / nTrees ** 2)
         if kind == "prediction":
-            var = var + self._oobMse
+            var = var + self._noiseVar
         return var[:, None]
 
     @property
@@ -181,7 +189,7 @@ class RandomForestModel(_TreeEnsemble):
 
     def _stateToDict(self) -> dict:
         return {"binner": self._binner.toDict(), "forest": self._packTrees(),
-                "inbag": self._inbag.tolist(), "oob": [None if not np.isfinite(v) else float(v) for v in self._oob],
+                "inbag": self._inbag.tolist(), "noiseVar": self._noiseVar, "oob": [None if not np.isfinite(v) else float(v) for v in self._oob],
                 "oobMse": self._oobMse, "oobR2": self._oobR2}
 
     def _stateFromDict(self, state: dict) -> None:
@@ -190,6 +198,7 @@ class RandomForestModel(_TreeEnsemble):
         self._inbag = np.array(state["inbag"], dtype=np.int32)
         self._oob = np.array([np.nan if v is None else v for v in state["oob"]], dtype=float)
         self._oobMse, self._oobR2 = float(state["oobMse"]), float(state["oobR2"])
+        self._noiseVar = float(state.get("noiseVar", self._oobMse))
 
 
 _LOSSES = ("squared", "absolute", "huber", "quantile")

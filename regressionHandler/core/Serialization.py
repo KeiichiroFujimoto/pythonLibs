@@ -7,7 +7,12 @@ Model dictionaries stay plain JSON, but every numeric list with at least
 
 which is exact (binary floats), several times smaller and much faster to
 parse than decimal text. ``expandArrays`` restores the nested lists, so model
-code sees the same structure either way.
+code sees the same structure either way. Integer and boolean arrays keep their
+type (also with None entries); integers outside the int64 range stay plain.
+
+Strict JSON has no NaN / Infinity, so files go through ``encodeNonFinite``
+(each non-finite float becomes {"__float__": "nan" | "inf" | "-inf"}) and
+``decodeNonFinite`` on the way back.
 """
 from __future__ import annotations
 
@@ -18,6 +23,8 @@ from numbers import Number
 import numpy as np
 
 MARKER = "__ndarray__"
+FLOAT_MARKER = "__float__"
+_INT64 = (-(2 ** 63), 2 ** 63 - 1)
 _DTYPES = {"float64", "int64", "int32", "uint8", "bool"}
 
 
@@ -37,12 +44,16 @@ def _numericArray(value):
     noneMask = np.array([v is None for v in flat])
     if noneMask.all():
         return None, None
-    ints = all(v is None or isinstance(v, (int, np.integer)) and not isinstance(v, bool) for v in flat)
-    bools = all(isinstance(v, (bool, np.bool_)) for v in flat)
-    if bools:
-        out = flat.astype(bool)
-    elif ints and not noneMask.any():
-        out = flat.astype(np.int64)
+    values = [v for v in flat if v is not None]
+    isBool = [isinstance(v, (bool, np.bool_)) for v in values]
+    if all(isBool):
+        out = np.array([bool(v) if v is not None else False for v in flat], dtype=bool)
+    elif any(isBool):
+        return None, None                                   # mixed bool / number: keep plain
+    elif all(isinstance(v, (int, np.integer)) for v in values):
+        if any(not _INT64[0] <= int(v) <= _INT64[1] for v in values):
+            return None, None                               # beyond int64: keep plain (exact Python ints)
+        out = np.array([0 if v is None else int(v) for v in flat], dtype=np.int64)
     else:
         out = np.array([np.nan if v is None else float(v) for v in flat], dtype=float)
     return out.reshape(arr.shape), (noneMask if noneMask.any() else None)
@@ -88,4 +99,31 @@ def expandArrays(obj):
         return {k: expandArrays(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [expandArrays(v) for v in obj]
+    return obj
+
+
+def encodeNonFinite(obj):
+    """Copy with every non-finite float replaced by {"__float__": "nan" | "inf" | "-inf"} (strict JSON)."""
+    if isinstance(obj, float) or isinstance(obj, np.floating):
+        v = float(obj)
+        if v != v:
+            return {FLOAT_MARKER: "nan"}
+        if v in (np.inf, -np.inf):
+            return {FLOAT_MARKER: "inf" if v > 0 else "-inf"}
+        return v
+    if isinstance(obj, dict):
+        return {k: encodeNonFinite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [encodeNonFinite(v) for v in obj]
+    return obj
+
+
+def decodeNonFinite(obj):
+    """Inverse of ``encodeNonFinite``."""
+    if isinstance(obj, dict):
+        if len(obj) == 1 and FLOAT_MARKER in obj:
+            return float(obj[FLOAT_MARKER])
+        return {k: decodeNonFinite(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [decodeNonFinite(v) for v in obj]
     return obj

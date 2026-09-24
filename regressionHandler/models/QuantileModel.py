@@ -176,6 +176,11 @@ class QuantileModel(SurrogateModelBase):
         resid = y - phi @ self._coef
         xtx = (phi * w[:, None]).T @ phi
         h = hallSheather(n, tau)
+        eps = np.finfo(float).eps ** (2.0 / 3.0)
+        if np.all(np.abs(resid) <= eps * max(1.0, float(np.max(np.abs(y))))):
+            # exact fit (e.g. constant response): the sparsity 1/f(0) is zero / undefined
+            self._info["seWarning"] = "all residuals are zero; standard errors are undefined"
+            return np.full((p, p), np.nan)
         if method == "bootstrap":
             rng = np.random.default_rng(self.options["seed"])
             draws = []
@@ -188,7 +193,6 @@ class QuantileModel(SurrogateModelBase):
             return np.cov(np.array(draws).T).reshape(p, p)
         if method == "iid":
             # sparsity 1/f(0): median-regression slope of the residuals closest to zero on their ranks
-            eps = np.finfo(float).eps ** (2.0 / 3.0)
             pz = int(np.sum(np.abs(resid) < eps))                        # interpolated points
             hh = max(p + 1, int(np.ceil(n * h)))
             ir = np.arange(pz + 1, min(hh + pz + 1, n) + 1)
@@ -206,7 +210,6 @@ class QuantileModel(SurrogateModelBase):
             bHi = quantileFit(phi, y, hi, w, 1e-9)[0]
             bLo = quantileFit(phi, y, lo, w, 1e-9)[0]
             dq = phi @ (bHi - bLo)
-            eps = np.finfo(float).eps ** (2.0 / 3.0)
             f = np.maximum(0.0, (hi - lo) / (dq - eps))
         hmat = (phi * (w * f)[:, None]).T @ phi
         hinv = np.linalg.pinv(hmat)
@@ -234,7 +237,7 @@ class QuantileModel(SurrogateModelBase):
         return float(self._coef.size)
 
     def _intervalDof(self) -> Optional[float]:
-        return float(self.xt.shape[0] - self._coef.size)
+        return float(self.nTrain - self._coef.size)
 
     # ------------------------------------------------------------------ extras
     @property
@@ -243,18 +246,27 @@ class QuantileModel(SurrogateModelBase):
 
     @property
     def coefficients(self) -> np.ndarray:
+        """(p,) coefficients, or {outputName: (p,)} with several outputs."""
         self._checkTrained()
+        if self._subModels is not None:
+            return {n: m.coefficients for n, m in zip(self.outputNames, self._subModels)}
         return self._coef.copy()
 
     def objective(self) -> float:
-        """Weighted check loss at the solution."""
+        """Weighted check loss at the solution ({outputName: value} with several outputs)."""
         self._checkTrained()
+        if self._subModels is not None:
+            return self._eachOutput("objective")
+        self._requireTrainingData()
         r = self.yt[:, 0] - self._predictValues(self.xt)[:, 0]
         return float(np.sum(self.wt * checkLoss(r, float(self.options["tau"]))))
 
     def pseudoR2(self) -> float:
         """Koenker-Machado R1 = 1 - V(tau) / V~(tau) (intercept-only reference)."""
         self._checkTrained()
+        if self._subModels is not None:
+            return self._eachOutput("pseudoR2")
+        self._requireTrainingData()
         y, w, tau = self.yt[:, 0], self.wt, float(self.options["tau"])
         b0, _ = quantileFit(np.ones((y.size, 1)), y, tau, w)
         v0 = float(np.sum(w * checkLoss(y - b0[0], tau)))
@@ -263,8 +275,8 @@ class QuantileModel(SurrogateModelBase):
     # ------------------------------------------------------------------ persistence
     def _stateToDict(self) -> dict:
         return {"basis": self._basis.toDict(), "coef": self._coef.tolist(),
-                "cov": None if self._cov is None else self._cov.tolist(), "info": {"iterations": self._info["iterations"],
-                                                                                  "gap": self._info["gap"]}}
+                "cov": None if self._cov is None else self._cov.tolist(),
+                "info": {k: self._info[k] for k in ("iterations", "gap", "seWarning") if k in self._info}}
 
     def _stateFromDict(self, state: dict) -> None:
         self._basis = buildComponent("basis", state["basis"])

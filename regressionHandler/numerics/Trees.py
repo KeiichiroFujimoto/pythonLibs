@@ -285,7 +285,7 @@ def buildForestLevelwise(codes: np.ndarray, binner: FeatureBinner, g: np.ndarray
         denom = hTot + lam
         value[open_] = np.where(denom > 0, -gTot / np.where(denom > 0, denom, 1.0), 0.0)
         cover[open_] = hTot
-        if depth >= maxDepth:
+        if depth >= maxDepth or not validBin.any():     # no feature has two distinct values: leaves only
             break
         bestGain = np.full(k, -np.inf)
         bestF = np.zeros(k, dtype=np.int64)
