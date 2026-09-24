@@ -36,6 +36,7 @@ SHORTHANDS = {
     "rbf-ridge": "Radial-basis regression (k-means centers, GCV ridge)",
     "gp": "Gaussian process / Kriging, Matern 5/2 ARD kernel, estimated noise",
     "rbf-smooth": "RBF (thin-plate spline) with leave-one-out smoothing",
+    "tps": "Thin-plate spline with linear null space, inputs scaled to [0, 1], smoothing by GCV",
     "<libraryForm>": "Any ModelLibrary form name (powerLaw, logistic, exponentialDecay, ...) as a nonlinear model",
 }
 
@@ -63,6 +64,8 @@ def expandShorthand(name: str) -> Optional[dict]:
                 "solver": {"type": "ridge", "penalty": "smoothness", "alpha": "gcv"}}
     if name == "gp":
         return {"type": "kriging", "corr": "matern52", "nugget": "auto"}
+    if name == "tps":
+        return {"type": "rbf", "kernel": "thinPlateSpline", "degree": 1, "smoothing": "gcv", "normalize": "range"}
     if name == "rbf-smooth":
         return {"type": "rbf", "kernel": "thinPlateSpline", "smoothing": "loo"}
     if name == "rbf-ridge":

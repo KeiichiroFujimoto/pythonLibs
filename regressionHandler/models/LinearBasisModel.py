@@ -39,7 +39,8 @@ class LinearBasisModel(SurrogateModelBase):
                 desc="Basis spec: name, {'type': name, **options} or a BasisBase instance")
         declare("solver", "ols", types=(str, dict, object),
                 desc="Solver spec: 'ols', 'ridge', 'elasticNet', 'robust' or {'type': ..., **options}")
-        self.supports.update(multiOutput=True, variances=True, derivatives=True, parameterInference=True)
+        self.supports.update(multiOutput=True, variances=True, derivatives=True, parameterInference=True,
+                             covariance=True)
         self._basis = None
         self._solution: Optional[SolveResult] = None
 
@@ -64,6 +65,7 @@ class LinearBasisModel(SurrogateModelBase):
 
     def _updateSupports(self) -> None:
         self.supports["variances"] = self._solution.covUnscaled is not None
+        self.supports["covariance"] = self._solution.covUnscaled is not None
         self.supports["parameterInference"] = self._solution.covUnscaled is not None
         self.supports["derivatives"] = bool(self._basis.hasDerivative)
 
@@ -87,6 +89,14 @@ class LinearBasisModel(SurrogateModelBase):
             out[:, j] = np.einsum("ij,jk,ik->i", phi, sol.covUnscaled[j], phi) * sol.sigma2[j]
         if kind == "prediction":
             out = out + sol.sigma2[None, :]
+        return out
+
+    def _predictCovariance(self, x: np.ndarray, kind: str) -> np.ndarray:
+        phi = self._basis.transform(x)
+        sol = self._solution
+        out = np.stack([phi @ sol.covUnscaled[j] @ phi.T * sol.sigma2[j] for j in range(sol.coef.shape[1])])
+        if kind == "prediction":
+            out = out + sol.sigma2[:, None, None] * np.eye(x.shape[0])[None]
         return out
 
     def _predictDerivatives(self, x: np.ndarray, kx: int) -> np.ndarray:

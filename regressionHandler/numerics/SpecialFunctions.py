@@ -370,3 +370,136 @@ def _gammaincPairScalar(a: float, x: float) -> tuple[float, float]:
 
 def _isScalar(*values) -> bool:
     return all(np.ndim(v) == 0 for v in values)
+
+
+# ---------------------------------------------------------------- modified Bessel K
+# Taylor coefficients of 1/Gamma(z) = sum_k c_k z^k (Abramowitz & Stegun 6.1.34).
+_RGAMMA = np.array([
+    1.0, 0.5772156649015329, -0.6558780715202538, -0.0420026350340952, 0.1665386113822915,
+    -0.0421977345555443, -0.0096219715278770, 0.0072189432466630, -0.0011651675918591,
+    -0.0002152416741149, 0.0001280502823882, -0.0000201348547807, -0.0000012504934821,
+    0.0000011330272320, -0.0000002056338417, 0.0000000061160950, 0.0000000050020075,
+    -0.0000000011812746, 0.0000000001043427, 0.0000000000077823, -0.0000000000036968,
+    0.0000000000005100, -0.0000000000000206, -0.0000000000000054, 0.0000000000000014,
+    0.0000000000000001,
+])
+
+
+def _temmeGammas(mu: float) -> tuple[float, float, float, float]:
+    """gam1, gam2, 1/Gamma(1+mu), 1/Gamma(1-mu) for |mu| <= 1/2 (Temme 1975)."""
+    k = np.arange(_RGAMMA.size)
+    powers = mu ** k
+    rgPlus = float(np.sum(_RGAMMA * powers))                     # 1/Gamma(1+mu) = sum c_{k+1} mu^k
+    rgMinus = float(np.sum(_RGAMMA * powers * (-1.0) ** k))      # 1/Gamma(1-mu)
+    odd = k % 2 == 1
+    gam1 = -float(np.sum(_RGAMMA[odd] * mu ** (k[odd] - 1)))     # (1/G(1-mu) - 1/G(1+mu)) / (2 mu)
+    gam2 = float(np.sum(_RGAMMA[~odd] * mu ** k[~odd]))          # (1/G(1-mu) + 1/G(1+mu)) / 2
+    return gam1, gam2, rgPlus, rgMinus
+
+
+def besselKPair(nu: float, x) -> tuple[np.ndarray, np.ndarray]:
+    """K_nu(x) and K_{nu+1}(x) for real nu >= 0 and x > 0 (vectorized over x).
+
+    Temme's series for x < 2 and Steed's continued fraction (CF2) otherwise
+    give K_mu, K_{mu+1} with |mu| <= 1/2; upward recurrence reaches nu.
+
+    References:
+        Temme, N.M. (1975) J. Comput. Phys. 19, 324-337.
+        Press et al., *Numerical Recipes* 3rd ed., section 6.6 (bessik).
+    """
+    x = np.atleast_1d(np.asarray(x, dtype=float))
+    if nu < 0:
+        raise ValueError("nu must be non-negative")
+    if np.any(x <= 0):
+        raise ValueError("x must be positive")
+    nl = int(nu + 0.5)
+    mu = nu - nl
+    mu2 = mu * mu
+    kmu = np.empty_like(x)
+    k1 = np.empty_like(x)
+    small = x < 2.0
+    if np.any(small):
+        xs = x[small]
+        gam1, gam2, rgPlus, rgMinus = _temmeGammas(mu)
+        x2 = 0.5 * xs
+        pimu = np.pi * mu
+        fact = pimu / np.sin(pimu) if abs(pimu) >= _EPS else 1.0
+        d = -np.log(x2)
+        e = mu * d
+        fact2 = np.where(np.abs(e) >= _EPS, np.sinh(e) / np.where(e == 0, 1.0, e), 1.0)
+        ff = fact * (gam1 * np.cosh(e) + gam2 * fact2 * d)
+        total = ff.copy()
+        ee = np.exp(e)
+        p = 0.5 * ee / rgPlus
+        q = 0.5 / (ee * rgMinus)
+        c = np.ones_like(xs)
+        dd = x2 * x2
+        total1 = p.copy()
+        idx = np.arange(xs.size)
+        for i in range(1, _MAX_ITER):
+            ff = (i * ff + p + q) / (i * i - mu2)
+            c = c * dd / i
+            p = p / (i - mu)
+            q = q / (i + mu)
+            delta = c * ff
+            total[idx] += delta
+            total1[idx] += c * (p - i * ff)
+            keep = np.abs(delta) >= np.abs(total[idx]) * _EPS
+            if not np.any(keep):
+                break
+            if not np.all(keep):
+                idx, ff, c, p, q, dd = idx[keep], ff[keep], c[keep], p[keep], q[keep], dd[keep]
+        kmu[small] = total
+        k1[small] = total1 * 2.0 / xs
+    if np.any(~small):
+        xl = x[~small]
+        b = 2.0 * (1.0 + xl)
+        d = 1.0 / b
+        h = d.copy()
+        delh = d.copy()
+        q1 = np.zeros_like(xl)
+        q2 = np.ones_like(xl)
+        a1 = 0.25 - mu2
+        q = np.full_like(xl, a1)
+        c = np.full_like(xl, a1)
+        a = -a1
+        s = 1.0 + q * delh
+        idx = np.arange(xl.size)
+        bb, dd2, dh, qq1, qq2, qq, cc = b, d, delh, q1, q2, q.copy(), c
+        for i in range(1, _MAX_ITER):
+            a -= 2 * i
+            cc = -a * cc / (i + 1.0)
+            qnew = (qq1 - bb * qq2) / a
+            qq1, qq2 = qq2, qnew
+            qq = qq + cc * qnew
+            bb = bb + 2.0
+            dd2 = 1.0 / (bb + a * dd2)
+            dh = (bb * dd2 - 1.0) * dh
+            h[idx] += dh
+            dels = qq * dh
+            s[idx] += dels
+            keep = np.abs(dels / s[idx]) >= _EPS
+            if not np.any(keep):
+                break
+            if not np.all(keep):
+                idx = idx[keep]
+                bb, dd2, dh, qq1, qq2, qq, cc = bb[keep], dd2[keep], dh[keep], qq1[keep], qq2[keep], qq[keep], cc[keep]
+        h = a1 * h
+        kmuL = np.sqrt(np.pi / (2.0 * xl)) * np.exp(-xl) / s
+        kmu[~small] = kmuL
+        k1[~small] = kmuL * (mu + xl + 0.5 - h) / xl
+    for i in range(1, nl + 1):
+        kmu, k1 = k1, (mu + i) * 2.0 / x * k1 + kmu
+    return kmu, k1
+
+
+def besselK(nu: float, x):
+    """Modified Bessel function of the second kind K_nu(x), x > 0 (K_{-nu} = K_nu)."""
+    scalar = np.ndim(x) == 0
+    out = besselKPair(abs(float(nu)), x)[0]
+    return float(out[0]) if scalar else out.reshape(np.shape(x))
+
+
+def gamma(x):
+    """Gamma function for x > 0."""
+    return np.exp(gammaln(x))

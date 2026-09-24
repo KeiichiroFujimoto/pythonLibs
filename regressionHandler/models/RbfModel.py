@@ -42,18 +42,27 @@ class RbfModel(SurrogateModelBase):
         d("kernel", "thinPlateSpline", values=RBF_KERNELS, desc="Radial function")
         d("epsilon", None, types=(int, float), lower=0.0,
           desc="Shape parameter for gaussian / (inverse) multiquadric kernels (None: 1 / mean spacing)")
-        d("smoothing", 0.0, values=("loo",), types=(int, float),
-          desc="0 interpolates; > 0 smooths; 'loo' chooses it by exact leave-one-out error")
+        d("smoothing", 0.0, values=("loo", "gcv"), types=(int, float),
+          desc="0 interpolates; > 0 smooths; 'loo' / 'gcv' choose it by leave-one-out error / GCV")
+        d("normalize", "std", values=("std", "range", "none"),
+          desc="Input scaling: standardize, map to [0, 1] or none")
         d("degree", None, types=int, lower=-1, upper=3, desc="Polynomial tail degree (None: kernel minimum)")
         d("neighbors", None, types=int, lower=2, desc="Use only this many nearest points per prediction")
-        d("smoothingRange", [-12.0, 2.0], types=list, desc="log10 search interval for smoothing='loo'")
+        d("smoothingRange", [-12.0, 2.0], types=list, desc="log10 search interval for smoothing='loo' / 'gcv'")
         self.supports.update(multiOutput=True, variances=False, derivatives=True, parameterInference=False)
 
     # ------------------------------------------------------------------ training
     def _train(self) -> None:
         x, y, w = self.xt, self.yt, self.wt
-        self._mean = x.mean(axis=0)
-        sd = x.std(axis=0)
+        mode = self.options["normalize"]
+        if mode == "std":
+            self._mean = x.mean(axis=0)
+            sd = x.std(axis=0)
+        elif mode == "range":
+            self._mean = x.min(axis=0)
+            sd = np.ptp(x, axis=0)
+        else:
+            self._mean, sd = np.zeros(x.shape[1]), np.ones(x.shape[1])
         self._std = np.where(sd > 0, sd, 1.0)
         self._xs = (x - self._mean) / self._std
         self._y = y
@@ -78,13 +87,13 @@ class RbfModel(SurrogateModelBase):
         s = self.options["smoothing"]
         if self._neighbors is None:
             self._setTrainingSystem(np.arange(n))
-            self._smoothing = self._chooseSmoothing() if s == "loo" else float(s)
+            self._smoothing = self._chooseSmoothing(s) if isinstance(s, str) else float(s)
         else:
             # Local mode never forms the n x n system; 'loo' is tuned on a subsample.
-            if s == "loo":
+            if isinstance(s, str):
                 sub = np.sort(np.random.default_rng(0).choice(n, min(n, 1500), replace=False))
                 self._setTrainingSystem(sub)
-                self._smoothing = self._chooseSmoothing()
+                self._smoothing = self._chooseSmoothing(s)
             else:
                 self._smoothing = float(s)
             self._kTrain = self._pTrain = self._sysY = self._sysW = None
@@ -132,7 +141,10 @@ class RbfModel(SurrogateModelBase):
         else:
             self._edf = float(n)
 
-    def _chooseSmoothing(self) -> float:
+    def _chooseSmoothing(self, rule: str = "loo") -> float:
+        return self._chooseSmoothingGcv() if rule == "gcv" else self._chooseSmoothingLoo()
+
+    def _chooseSmoothingLoo(self) -> float:
         n, q = self._pTrain.shape
         rhs = np.vstack([self._sysY, np.zeros((q, self._sysY.shape[1]))])
 
@@ -152,6 +164,46 @@ class RbfModel(SurrogateModelBase):
         left, right = grid[max(k - 1, 0)], grid[min(k + 1, grid.size - 1)]
         best = minimizeScalar(looScore, (left, right), xatol=1e-3)
         self._looRmse = float(np.sqrt(min(best.fun, vals[k])))
+        return float(10.0 ** (best.x[0] if best.fun <= vals[k] else grid[k]))
+
+    def _chooseSmoothingGcv(self) -> float:
+        """GCV smoothing via a generalized eigen-decomposition in the null space of P^T.
+
+        With Q2 spanning {c : P^T c = 0}, M = Q2^T K Q2, N = Q2^T W^-1 Q2 and
+        M V = N V S (V^T N V = I), the residual is lambda W^-1 Q2 V (S + lambda)^-1 V^T Q2^T y
+        and tr(I - A) = lambda sum 1 / (s_k + lambda): every trial lambda costs O(n^2).
+        """
+        n, q = self._pTrain.shape
+        if q:
+            qFull, _ = np.linalg.qr(self._pTrain, mode="complete")
+            q2 = qFull[:, q:]
+        else:
+            q2 = np.eye(n)
+        winv = 1.0 / self._sysW
+        m = q2.T @ self._kTrain @ q2
+        nMat = (q2 * winv[:, None]).T @ q2
+        lower = np.linalg.cholesky(nMat)
+        li = np.linalg.inv(lower)
+        s, u = np.linalg.eigh(li @ m @ li.T)
+        v = li.T @ u
+        proj = v.T @ q2.T @ self._sysY                      # (n - q, ny)
+        back = (q2 * winv[:, None]) @ v                     # W^-1 Q2 V
+        wts = self._sysW
+
+        def gcv(logL: float) -> float:
+            lam = 10.0 ** logL
+            resid = lam * back @ (proj / (s + lam)[:, None])
+            trIminusA = lam * float(np.sum(1.0 / (s + lam)))
+            rss = float(np.sum(wts[:, None] * resid * resid)) / (n * resid.shape[1])
+            return rss / max(trIminusA / n, 1e-12) ** 2
+
+        lo, hi = map(float, self.options["smoothingRange"])
+        grid = np.linspace(lo, hi, 57)
+        vals = np.array([gcv(g) for g in grid])
+        k = int(np.argmin(vals))
+        left, right = grid[max(k - 1, 0)], grid[min(k + 1, grid.size - 1)]
+        best = minimizeScalar(gcv, (left, right), xatol=1e-4)
+        self._gcv = float(min(best.fun, vals[k]))
         return float(10.0 ** (best.x[0] if best.fun <= vals[k] else grid[k]))
 
     # ------------------------------------------------------------------ prediction

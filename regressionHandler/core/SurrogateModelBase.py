@@ -72,6 +72,7 @@ class SurrogateModelBase(ABC):
             "variances": False,         # analytic predictive variances / intervals
             "derivatives": False,       # analytic dy/dx (else finite differences)
             "parameterInference": False,  # FitResult with standard errors
+            "covariance": False,        # joint posterior covariance (conditional simulation)
         }
         self._initialize()
         self.options.update(options)
@@ -240,6 +241,48 @@ class SurrogateModelBase(ABC):
         xp[:, kx] += h
         xm[:, kx] -= h
         return (self._predictAll(xp) - self._predictAll(xm)) / (2.0 * h)
+
+    def _predictCovariance(self, x: np.ndarray, kind: str) -> np.ndarray:
+        raise NotImplementedError
+
+    def predictCovariance(self, x, kind: str = "confidence") -> np.ndarray:
+        """Joint posterior covariance of the predictions, shape (ny, m, m)."""
+        self._checkTrained()
+        if kind not in INTERVAL_KINDS:
+            raise ValueError(f"kind must be one of {INTERVAL_KINDS}")
+        if not self.supports.get("covariance", False):
+            raise NotImplementedError(f"{type(self).__name__} does not provide a joint predictive covariance")
+        xv = self._validX(x)
+        if self._subModels is not None:
+            return np.concatenate([m.predictCovariance(xv, kind) for m in self._subModels])
+        cov = self._predictCovariance(xv, kind)
+        return cov[None] if cov.ndim == 2 else cov
+
+    def simulate(self, x, nSamples: int = 1, seed: Optional[int] = 0, kind: str = "confidence") -> np.ndarray:
+        """Conditional simulation: draws (nSamples, m, ny) from the joint posterior at x.
+
+        ``confidence`` draws the latent mean surface, ``prediction`` adds
+        independent observation noise.
+        """
+        mean = self.predictValues(x)
+        cov = self.predictCovariance(x, kind)
+        rng = np.random.default_rng(seed)
+        out = np.empty((nSamples,) + mean.shape)
+        for j in range(mean.shape[1]):
+            c = cov[j]
+            scale = max(float(np.max(np.diag(c))), 1e-300)
+            jitter = 0.0
+            for _ in range(12):
+                try:
+                    lower = np.linalg.cholesky(c + jitter * np.eye(c.shape[0]))
+                    break
+                except np.linalg.LinAlgError:
+                    jitter = scale * 1e-12 if jitter == 0.0 else jitter * 10.0
+            else:
+                w, v = np.linalg.eigh(c)
+                lower = v * np.sqrt(np.maximum(w, 0.0))
+            out[:, :, j] = mean[:, j] + rng.standard_normal((nSamples, c.shape[0])) @ lower.T
+        return out
 
     def predictGradient(self, x) -> np.ndarray:
         """(n, nx, ny) gradient of every output."""

@@ -23,6 +23,7 @@ from typing import Optional
 import numpy as np
 
 from pythonLibs.regressionHandler.core.Registry import ComponentBase, buildComponent, registry
+from pythonLibs.regressionHandler.numerics import SpecialFunctions as _sf
 
 
 def weightedSqDist(xa: np.ndarray, xb: np.ndarray, c: np.ndarray) -> np.ndarray:
@@ -61,9 +62,13 @@ class KernelBase(ComponentBase):
         super().__init__(**options)
         self.nx: Optional[int] = None
 
-    def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None) -> "KernelBase":
+    def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
         self.nx = nx
         return self
+
+    def lengthscaleIndices(self) -> list[int]:
+        """Indices of log-lengthscale parameters (tied together for the tied-lengthscale start)."""
+        return list(range(self.nParams()))
 
     def nParams(self) -> int:
         raise NotImplementedError
@@ -102,52 +107,232 @@ class KernelBase(ComponentBase):
         return ProductKernel(kernels=[self, other])
 
 
+EARTH_RADIUS = {"km": 6378.388, "miles": 3963.34}   # radii used by the great-circle distance
+
+
 class StationaryKernel(KernelBase):
-    """Kernel k(r2) of the scaled squared distance."""
+    """Kernel k(r2) of a squared, scaled distance r2 between inputs.
+
+    ``distance`` selects how r2 is formed:
+        "scaled"       sum_k (dx_k / l_k)^2 with ARD, isotropic or PLS lengthscales
+        "anisotropic"  d^T L L^T d with an estimated lower-triangular L (full
+                       geometric anisotropy); with a fixed ``V`` matrix the inputs
+                       are first transformed x -> x V^-T and then scaled
+        "greatCircle"  (great-circle distance / l)^2 for (longitude, latitude)
+                       inputs in degrees; l is in ``radiusUnit`` units
+    Subclasses may add shape parameters (e.g. the Matern smoothness), which
+    follow the distance parameters in the parameter vector.
+    """
 
     def _declareOptions(self, declare) -> None:
         declare("ard", True, types=bool, desc="One lengthscale per input (False: isotropic)")
-        declare("lengthscale0", 1.0, types=(int, float), lower=0.0, desc="Initial lengthscale (standardized units)")
-        declare("lengthscaleBounds", [1e-3, 1e3], types=list, desc="Lengthscale bounds (standardized units)")
+        declare("lengthscale0", 1.0, types=(int, float), lower=0.0, desc="Initial lengthscale")
+        declare("lengthscaleBounds", [1e-3, 1e3], types=list, desc="Lengthscale bounds")
+        declare("distance", "scaled", values=("scaled", "anisotropic", "greatCircle"), desc="Distance definition")
+        declare("V", None, types=list, desc="Fixed anisotropy matrix (inputs transformed by V^-T), nx x nx")
+        declare("radiusUnit", "km", values=tuple(EARTH_RADIUS), desc="Earth radius unit for greatCircle")
 
-    def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None) -> "KernelBase":
+    def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
         self.nx = nx
         self._pls = None if plsWeights is None else np.asarray(plsWeights, dtype=float)
+        self._logUnit = float(np.log(unitScale)) if unitScale > 0 else 0.0
+        dist = self.options["distance"]
+        if dist == "greatCircle" and nx != 2:
+            raise ValueError("greatCircle distance needs exactly two inputs (longitude, latitude in degrees)")
+        v = self.options["V"]
+        self._vInvT = None if v is None else np.linalg.inv(np.asarray(v, dtype=float)).T
+        if self._vInvT is not None and self._vInvT.shape != (nx, nx):
+            raise ValueError("V must be an nx x nx matrix")
+        self._tril = np.tril_indices(nx)
         return self
 
-    # -- parameterization ------------------------------------------------------
-    def nParams(self) -> int:
+    # -- parameter bookkeeping ----------------------------------------------------
+    def _nShape(self) -> int:
+        return 0
+
+    def _shapeInitial(self) -> np.ndarray:
+        return np.zeros(0)
+
+    def _shapeBounds(self) -> np.ndarray:
+        return np.zeros((0, 2))
+
+    def _shapeNames(self) -> list[str]:
+        return []
+
+    def _nDistance(self) -> int:
+        dist = self.options["distance"]
+        if dist == "greatCircle":
+            return 1
+        if dist == "anisotropic" and self._vInvT is None:
+            return self.nx * (self.nx + 1) // 2
         if self._pls is not None:
             return self._pls.shape[1]
         return self.nx if self.options["ard"] else 1
 
+    def nParams(self) -> int:
+        return self._nDistance() + self._nShape()
+
+    def _isCholesky(self) -> bool:
+        return self.options["distance"] == "anisotropic" and self._vInvT is None
+
+    def _cholDiagMask(self) -> np.ndarray:
+        rows, cols = self._tril
+        return rows == cols
+
+    def lengthscaleIndices(self) -> list[int]:
+        return [] if self._isCholesky() else list(range(self._nDistance()))
+
     def initialParams(self) -> np.ndarray:
-        return np.full(self.nParams(), np.log(self.options["lengthscale0"]))
+        l0 = np.log(self.options["lengthscale0"]) + self._logUnit
+        if self._isCholesky():
+            p = np.zeros(self._nDistance())
+            p[self._cholDiagMask()] = -l0          # log of L_ii = 1 / lengthscale
+        else:
+            p = np.full(self._nDistance(), l0)
+        return np.concatenate([p, self._shapeInitial()])
 
     def bounds(self) -> np.ndarray:
         lo, hi = self.options["lengthscaleBounds"]
-        return np.tile([np.log(lo), np.log(hi)], (self.nParams(), 1))
+        lo, hi = np.log(lo) + self._logUnit, np.log(hi) + self._logUnit
+        if self._isCholesky():
+            b = np.tile([-50.0, 50.0], (self._nDistance(), 1))
+            b[self._cholDiagMask()] = [-hi, -lo]
+        else:
+            b = np.tile([lo, hi], (self._nDistance(), 1))
+        return np.vstack([b, self._shapeBounds()])
 
     def paramNames(self) -> list[str]:
-        tag = "plsLengthscale" if self._pls is not None else "lengthscale"
-        return [f"log_{tag}{i}" for i in range(self.nParams())]
+        if self._isCholesky():
+            rows, cols = self._tril
+            names = [f"log_L{i}{j}" if i == j else f"L{i}{j}" for i, j in zip(rows, cols)]
+        elif self.options["distance"] == "greatCircle":
+            names = [f"log_lengthscale_{self.options['radiusUnit']}"]
+        else:
+            tag = "plsLengthscale" if self._pls is not None else "lengthscale"
+            names = [f"log_{tag}{i}" for i in range(self._nDistance())]
+        return names + self._shapeNames()
 
+    def _split(self, p):
+        p = np.asarray(p, dtype=float)
+        nd = self._nDistance()
+        return p[:nd], p[nd:]
+
+    # -- scaled distance (ARD / isotropic / PLS) -----------------------------------
     def invL2(self, p) -> np.ndarray:
-        e = np.exp(-2.0 * np.asarray(p, dtype=float))
+        pd = np.asarray(p, dtype=float)[: self._nDistance()]
+        e = np.exp(-2.0 * pd)
         if self._pls is not None:
             return (self._pls ** 2) @ e
         return e if self.options["ard"] else np.full(self.nx, e[0])
 
-    def _dInvL2(self, p) -> np.ndarray:
-        """(nParams, nx): d invL2 / d p_i."""
-        e = np.exp(-2.0 * np.asarray(p, dtype=float))
+    def _dInvL2(self, pd) -> np.ndarray:
+        e = np.exp(-2.0 * np.asarray(pd, dtype=float))
         if self._pls is not None:
             return (-2.0 * e)[:, None] * (self._pls ** 2).T
         if self.options["ard"]:
             return np.diag(-2.0 * e)
         return np.full((1, self.nx), -2.0 * e[0])
 
-    # -- kernel profile -------------------------------------------------------
+    def _cholesky(self, pd) -> np.ndarray:
+        l = np.zeros((self.nx, self.nx))
+        vals = np.array(pd, dtype=float)
+        diag = self._cholDiagMask()
+        vals[diag] = np.exp(vals[diag])
+        l[self._tril] = vals
+        return l
+
+    def _transform(self, x):
+        return x if self._vInvT is None else x @ self._vInvT
+
+    # -- great-circle distance --------------------------------------------------------
+    def _haversine(self, xa, xb):
+        rad = np.pi / 180.0
+        lon1, lat1 = xa[:, [0]] * rad, xa[:, [1]] * rad
+        lon2, lat2 = xb[:, 0][None, :] * rad, xb[:, 1][None, :] * rad
+        h = np.sin(0.5 * (lat1 - lat2)) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(0.5 * (lon1 - lon2)) ** 2
+        return np.clip(h, 0.0, 1.0), (lon1, lat1, lon2, lat2)
+
+    def greatCircleDistance(self, xa, xb) -> np.ndarray:
+        h, _ = self._haversine(xa, xb)
+        return 2.0 * EARTH_RADIUS[self.options["radiusUnit"]] * np.arcsin(np.sqrt(h))
+
+    # -- r2 and its derivatives -------------------------------------------------------
+    def _r2(self, xa, xb, pd) -> np.ndarray:
+        dist = self.options["distance"]
+        if dist == "greatCircle":
+            return (self.greatCircleDistance(xa, xb) * np.exp(-pd[0])) ** 2
+        if self._isCholesky():
+            l = self._cholesky(pd)
+            return weightedSqDist(xa @ l, xb @ l, np.ones(self.nx))
+        return weightedSqDist(self._transform(xa), self._transform(xb), self.invL2(pd))
+
+    def _r2WithGrads(self, x, pd, cache):
+        """Training r2 and [d r2 / d pd_i]."""
+        dist = self.options["distance"]
+        if dist == "greatCircle":
+            r2 = self._r2(x, x, pd)
+            return r2, [-2.0 * r2]
+        if self._isCholesky():
+            diff = cache if cache is not None and cache.ndim == 3 and cache.shape[0] == self.nx and \
+                self._cacheSigned else np.stack([x[:, k][:, None] - x[:, k][None, :] for k in range(self.nx)])
+            l = self._cholesky(pd)
+            u = np.tensordot(l.T, diff, axes=1)                  # u_j = sum_i L_ij d_i
+            r2 = np.sum(u * u, axis=0)
+            rows, cols = self._tril
+            grads = []
+            for a, b in zip(rows, cols):
+                g = 2.0 * u[b] * diff[a]
+                grads.append(g * l[a, b] if a == b else g)          # log-diagonal chain rule
+            return r2, grads
+        xt = self._transform(x)
+        inv = self.invL2(pd)
+        dInv = self._dInvL2(pd)
+        if cache is not None and not self._cacheSigned:
+            r2 = np.tensordot(inv, cache, axes=1)
+            grads = []
+            for i in range(dInv.shape[0]):
+                nz = np.flatnonzero(dInv[i])
+                grads.append(dInv[i, nz[0]] * cache[nz[0]] if nz.size == 1 else np.tensordot(dInv[i], cache, axes=1))
+            return r2, grads
+        r2 = weightedSqDist(xt, xt, inv)
+        grads = []
+        for i in range(dInv.shape[0]):
+            nz = np.flatnonzero(dInv[i])
+            if nz.size == 1:
+                k = nz[0]
+                d = xt[:, k][:, None] - xt[:, k][None, :]
+                grads.append(dInv[i, k] * d * d)
+            else:
+                grads.append(signedSqDist(xt, xt, dInv[i]))
+        return r2, grads
+
+    def _dr2dx(self, xa, xb, pd, kx: int) -> np.ndarray:
+        dist = self.options["distance"]
+        if dist == "greatCircle":
+            h, (lon1, lat1, lon2, lat2) = self._haversine(xa, xb)
+            rad = np.pi / 180.0
+            radius = EARTH_RADIUS[self.options["radiusUnit"]]
+            scale = np.exp(-2.0 * pd[0]) * 4.0 * radius * radius
+            sq = np.sqrt(h)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                dr2dh = scale * np.where(sq > 1e-12, np.arcsin(sq) / (sq * np.sqrt(np.maximum(1.0 - h, 1e-300))), 1.0)
+            if kx == 0:
+                dh = np.cos(lat1) * np.cos(lat2) * 0.5 * np.sin(lon1 - lon2)
+            else:
+                dh = 0.5 * np.sin(lat1 - lat2) - np.sin(lat1) * np.cos(lat2) * np.sin(0.5 * (lon1 - lon2)) ** 2
+            return dr2dh * dh * rad
+        if self._isCholesky():
+            m = self._cholesky(pd) @ self._cholesky(pd).T
+            diff = np.stack([xa[:, k][:, None] - xb[:, k][None, :] for k in range(self.nx)])
+            return 2.0 * np.tensordot(m[kx], diff, axes=1)
+        inv = self.invL2(pd)
+        xta, xtb = self._transform(xa), self._transform(xb)
+        dr2dxt = [2.0 * inv[j] * (xta[:, j][:, None] - xtb[:, j][None, :]) for j in range(self.nx)]
+        if self._vInvT is None:
+            return dr2dxt[kx]
+        return sum(dr2dxt[j] * self._vInvT[kx, j] for j in range(self.nx))
+
+    # -- kernel profile -------------------------------------------------------------
     def f(self, r2: np.ndarray) -> np.ndarray:
         raise NotImplementedError
 
@@ -155,55 +340,57 @@ class StationaryKernel(KernelBase):
         """dk / d(r2); where singular at r2 = 0 it is multiplied by zero distances, return 0 there."""
         raise NotImplementedError
 
-    # -- public ---------------------------------------------------------------
-    def matrix(self, xa, xb, p) -> np.ndarray:
-        return self.f(weightedSqDist(xa, xb, self.invL2(p)))
+    def _f(self, r2, ps):
+        return self.f(r2)
 
-    def gradients(self, x, p) -> list[np.ndarray]:
-        r2 = weightedSqDist(x, x, self.invL2(p))
-        fp = self.fPrime(r2)
-        dInv = self._dInvL2(p)
+    def _fPrime(self, r2, ps):
+        return self.fPrime(r2)
+
+    def _shapeGradients(self, r2, ps) -> list[np.ndarray]:
+        """d k / d ps_i by central differences (shape parameters are few)."""
         out = []
-        for i in range(dInv.shape[0]):
-            c = dInv[i]
-            nz = np.flatnonzero(c)
-            if nz.size == 1:
-                k = nz[0]
-                diff = x[:, k][:, None] - x[:, k][None, :]
-                out.append(fp * c[k] * diff * diff)
-            else:
-                out.append(fp * signedSqDist(x, x, c))
+        for i in range(ps.size):
+            h = 1e-5 * max(1.0, abs(ps[i]))
+            up, dn = ps.copy(), ps.copy()
+            up[i] += h
+            dn[i] -= h
+            out.append((self._f(r2, up) - self._f(r2, dn)) / (2.0 * h))
         return out
 
-    _CACHE_LIMIT = 60_000_000  # elements of the (nx, n, n) squared-difference cache
+    # -- public ---------------------------------------------------------------
+    def matrix(self, xa, xb, p) -> np.ndarray:
+        pd, ps = self._split(p)
+        return self._f(self._r2(xa, xb, pd), ps)
+
+    def gradients(self, x, p) -> list[np.ndarray]:
+        return self.matrixAndGradients(x, p, None)[1]
+
+    _CACHE_LIMIT = 60_000_000  # elements of the (nx, n, n) difference cache
+
+    @property
+    def _cacheSigned(self) -> bool:
+        return self._isCholesky()
 
     def trainingCache(self, x):
         n, nx = x.shape
-        if n * n * nx > self._CACHE_LIMIT:
+        if n * n * nx > self._CACHE_LIMIT or self.options["distance"] == "greatCircle":
             return None
-        return np.stack([(x[:, k][:, None] - x[:, k][None, :]) ** 2 for k in range(nx)])
+        if self._isCholesky():
+            return np.stack([x[:, k][:, None] - x[:, k][None, :] for k in range(nx)])
+        xt = self._transform(x)
+        return np.stack([(xt[:, k][:, None] - xt[:, k][None, :]) ** 2 for k in range(nx)])
 
     def matrixAndGradients(self, x, p, cache=None):
-        if cache is None:
-            return self.matrix(x, x, p), self.gradients(x, p)
-        inv = self.invL2(p)
-        r2 = np.tensordot(inv, cache, axes=1)
-        k = self.f(r2)
-        fp = self.fPrime(r2)
-        dInv = self._dInvL2(p)
-        grads = []
-        for i in range(dInv.shape[0]):
-            nz = np.flatnonzero(dInv[i])
-            if nz.size == 1:
-                grads.append(fp * (dInv[i, nz[0]] * cache[nz[0]]))
-            else:
-                grads.append(fp * np.tensordot(dInv[i], cache, axes=1))
+        pd, ps = self._split(p)
+        r2, dr2 = self._r2WithGrads(x, pd, cache)
+        k = self._f(r2, ps)
+        fp = self._fPrime(r2, ps)
+        grads = [fp * g for g in dr2] + self._shapeGradients(r2, ps)
         return k, grads
 
     def dx(self, xa, xb, p, kx: int) -> np.ndarray:
-        inv = self.invL2(p)
-        fp = self.fPrime(weightedSqDist(xa, xb, inv))
-        return fp * 2.0 * inv[kx] * (xa[:, kx][:, None] - xb[:, kx][None, :])
+        pd, ps = self._split(p)
+        return self._fPrime(self._r2(xa, xb, pd), ps) * self._dr2dx(xa, xb, pd, kx)
 
 
 @registry("kernel").register("squaredExponential")
@@ -288,6 +475,121 @@ class RationalQuadratic(StationaryKernel):
         return -0.5 * (1.0 + r2 / (2.0 * a)) ** (-a - 1.0)
 
 
+@registry("kernel").register("matern")
+class Matern(StationaryKernel):
+    """Matern correlation with general smoothness nu (fixed or estimated).
+
+        k = 2^(1-nu) / Gamma(nu) * z^nu * K_nu(z)
+        z = sqrt(2 nu) * r   (parameterization="standard": nu = 1/2, 3/2, 5/2 equal the
+                               absoluteExponential / matern32 / matern52 kernels)
+        z = r                (parameterization="range": the lengthscale is the range parameter)
+    """
+
+    def _declareOptions(self, declare) -> None:
+        super()._declareOptions(declare)
+        declare("nu", 1.5, values=("estimate",), types=(int, float), lower=1e-3,
+                desc="Smoothness; 'estimate' adds log(nu) to the hyperparameters")
+        declare("nu0", 1.5, types=(int, float), lower=1e-3, desc="Initial smoothness when estimated")
+        declare("nuBounds", [0.25, 8.0], types=list, desc="Smoothness bounds when estimated")
+        declare("parameterization", "standard", values=("standard", "range"), desc="Distance scaling convention")
+
+    def _nShape(self) -> int:
+        return 1 if self.options["nu"] == "estimate" else 0
+
+    def _shapeInitial(self):
+        return np.log([self.options["nu0"]]) if self._nShape() else np.zeros(0)
+
+    def _shapeBounds(self):
+        return np.log([self.options["nuBounds"]]) if self._nShape() else np.zeros((0, 2))
+
+    def _shapeNames(self):
+        return ["log_nu"] if self._nShape() else []
+
+    def _nu(self, ps) -> float:
+        return float(np.exp(ps[0])) if ps.size else float(self.options["nu"])
+
+    def _scale2(self, nu: float) -> float:
+        return 2.0 * nu if self.options["parameterization"] == "standard" else 1.0
+
+    def _f(self, r2, ps):
+        nu = self._nu(ps)
+        z = np.sqrt(self._scale2(nu) * np.asarray(r2, dtype=float))
+        out = np.ones_like(z)
+        pos = z > 0
+        if np.any(pos):
+            zp = z[pos]
+            logc = (1.0 - nu) * np.log(2.0) - _sf.gammaln(nu)
+            with np.errstate(under="ignore"):
+                out[pos] = np.exp(logc + nu * np.log(zp)) * _sf.besselK(nu, zp)
+        return out
+
+    def _fPrime(self, r2, ps):
+        # dk/dr2 = -c * (s2 / 2) * z^(nu-1) K_(nu-1)(z);  at z = 0 the limit is -s2 / (4 (nu - 1)) for nu > 1
+        nu = self._nu(ps)
+        s2 = self._scale2(nu)
+        z = np.sqrt(s2 * np.asarray(r2, dtype=float))
+        out = np.full(z.shape, -s2 / (4.0 * (nu - 1.0)) if nu > 1.0 else 0.0)
+        pos = z > 0
+        if np.any(pos):
+            zp = z[pos]
+            logc = (1.0 - nu) * np.log(2.0) - _sf.gammaln(nu)
+            with np.errstate(under="ignore"):
+                out[pos] = -0.5 * s2 * np.exp(logc + (nu - 1.0) * np.log(zp)) * _sf.besselK(abs(nu - 1.0), zp)
+        return out
+
+    def rangeParameters(self, p) -> np.ndarray:
+        """Lengthscales expressed as range parameters a (distance divisor inside z = d / a)."""
+        pd, ps = self._split(p)
+        ell = np.exp(pd) if self.options["distance"] != "anisotropic" else np.full(1, np.nan)
+        return ell / np.sqrt(self._scale2(self._nu(ps)))
+
+
+@registry("kernel").register("wendland")
+class Wendland(StationaryKernel):
+    """Compactly supported Wendland correlation (zero beyond one lengthscale).
+
+    phi_{d,k}(r), r = distance / lengthscale, with l = floor(d/2) + k + 1:
+        k = 0: (1-r)^l
+        k = 1: (1-r)^(l+1) ((l+1) r + 1)
+        k = 2: (1-r)^(l+2) ((l^2+4l+3) r^2 + (3l+6) r + 3) / 3
+    positive definite in up to ``dimension`` inputs (default: number of inputs).
+    """
+
+    def _declareOptions(self, declare) -> None:
+        super()._declareOptions(declare)
+        declare("k", 2, values=(0, 1, 2), desc="Smoothness order (2k continuous derivatives at 0)")
+        declare("dimension", None, types=int, lower=1, desc="Dimension of positive definiteness (default nx)")
+
+    def _l(self) -> int:
+        d = self.options["dimension"] or self.nx
+        return d // 2 + self.options["k"] + 1
+
+    def f(self, r2):
+        r = np.sqrt(np.asarray(r2, dtype=float))
+        t = np.clip(1.0 - r, 0.0, None)
+        l, k = self._l(), self.options["k"]
+        if k == 0:
+            return t ** l
+        if k == 1:
+            return t ** (l + 1) * ((l + 1) * r + 1.0)
+        a, b = l * l + 4 * l + 3, 3 * l + 6
+        return t ** (l + 2) * (a * r * r + b * r + 3.0) / 3.0
+
+    def fPrime(self, r2):
+        r = np.sqrt(np.asarray(r2, dtype=float))
+        t = np.clip(1.0 - r, 0.0, None)
+        l, k = self._l(), self.options["k"]
+        if k == 0:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return np.where(r > 0, -l * t ** (l - 1) / (2.0 * np.where(r > 0, r, 1.0)), 0.0)
+        if k == 1:
+            return -0.5 * (l + 1) * (l + 2) * t ** l
+        m = l + 2
+        a, b = l * l + 4 * l + 3, 3 * l + 6
+        nOverR = (2 * a - b * (m + 1)) - a * (m + 2) * r      # N(r) / r, N = -m P + (1-r) P'
+        return t ** (m - 1) * nOverR / 6.0
+
+
 @registry("kernel").register("periodic")
 class Periodic(KernelBase):
     """exp(-sum_k 2 sin^2(pi d_k / P_k) / l_k^2), ARD lengthscales and periods."""
@@ -298,18 +600,28 @@ class Periodic(KernelBase):
         declare("lengthscaleBounds", [1e-3, 1e3], types=list, desc="Lengthscale bounds")
         declare("periodBounds", [1e-2, 1e2], types=list, desc="Period bounds")
 
+    def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
+        self.nx = nx
+        self._logUnit = float(np.log(unitScale)) if unitScale > 0 else 0.0
+        return self
+
     def nParams(self) -> int:
         return 2 * self.nx
 
+    def lengthscaleIndices(self) -> list[int]:
+        return []
+
     def initialParams(self) -> np.ndarray:
+        u = getattr(self, "_logUnit", 0.0)
         return np.concatenate([np.full(self.nx, np.log(self.options["lengthscale0"])),
-                               np.full(self.nx, np.log(self.options["period0"]))])
+                               np.full(self.nx, np.log(self.options["period0"]) + u)])
 
     def bounds(self) -> np.ndarray:
+        u = getattr(self, "_logUnit", 0.0)
         lb, ub = self.options["lengthscaleBounds"]
         pb, pu = self.options["periodBounds"]
         return np.vstack([np.tile([np.log(lb), np.log(ub)], (self.nx, 1)),
-                          np.tile([np.log(pb), np.log(pu)], (self.nx, 1))])
+                          np.tile([np.log(pb) + u, np.log(pu) + u], (self.nx, 1))])
 
     def paramNames(self) -> list[str]:
         return [f"log_lengthscale{i}" for i in range(self.nx)] + [f"log_period{i}" for i in range(self.nx)]
@@ -350,11 +662,17 @@ class _CompositeKernel(KernelBase):
             self.options["kernels"] = self._built
         return self._built
 
-    def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None) -> "KernelBase":
+    def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
         self.nx = nx
         for k in self._children():
-            k.setup(nx, plsWeights)
+            k.setup(nx, plsWeights, unitScale)
         return self
+
+    def lengthscaleIndices(self) -> list[int]:
+        out = []
+        for k, sl in zip(self._children(), self._slices()):
+            out.extend(sl.start + i for i in k.lengthscaleIndices())
+        return out
 
     def _slices(self):
         out, start = [], 0
@@ -456,7 +774,7 @@ class ProductKernel(_CompositeKernel):
         return total
 
 
-KERNEL_ALIASES = {"rbf": "squaredExponential", "gaussian": "squaredExponential"}
+KERNEL_ALIASES = {"rbf": "squaredExponential", "gaussian": "squaredExponential", "exponential": "absoluteExponential"}
 
 
 def buildKernel(spec) -> KernelBase:

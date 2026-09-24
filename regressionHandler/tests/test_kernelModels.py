@@ -170,3 +170,60 @@ def test_krigingOptimumIsStationary():
     _, grad = m._negLogLikelihood(m._params)
     interior = (m._params > bounds[:, 0] + 1e-6) & (m._params < bounds[:, 1] - 1e-6)
     assert np.max(np.abs(grad[interior])) < 1e-3
+
+
+# ---------------------------------------------------------------- spatial-statistics workflows
+def _spatial(n=60, seed=0):
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(0, 3, (n, 2))
+    return x, np.sin(x[:, 0]) * np.cos(x[:, 1]) + 0.05 * rng.standard_normal(n)
+
+
+@pytest.mark.parametrize("corr", [
+    {"type": "matern", "nu": "estimate", "ard": False},
+    {"type": "matern", "nu": 1.0, "parameterization": "range", "ard": False},
+    {"type": "wendland", "k": 2, "ard": False, "lengthscale0": 2.0},
+    {"type": "squaredExponential", "distance": "anisotropic"},
+])
+@pytest.mark.parametrize("likelihood", ["reml", "ml", "gcv"])
+def test_spatialKrigingFitsAndRoundTrips(corr, likelihood):
+    x, y = _spatial()
+    m = KrigingModel(corr=corr, poly="linear", likelihood=likelihood).fit(x, y)
+    t = np.random.default_rng(1).uniform(0.2, 2.8, (15, 2))
+    truth = np.sin(t[:, 0]) * np.cos(t[:, 1])
+    assert np.sqrt(np.mean((m.predict(t).ravel() - truth) ** 2)) < 0.1
+    fs = m.spatialSummary()
+    assert 0 < fs["effectiveDof"] <= x.shape[0] and fs["gcv"] > 0 and fs["sigma2"] > 0
+    assert "Covariance model" in m.summary()
+    loaded = SurrogateModelBase.fromDict(json.loads(json.dumps(m.toDict())))
+    np.testing.assert_allclose(loaded.predict(t), m.predict(t), rtol=1e-10)
+    np.testing.assert_allclose(loaded.predictVariances(t), m.predictVariances(t), rtol=1e-8)
+
+
+def test_parameterIntervalsContainEstimate():
+    x, y = _spatial(80)
+    m = KrigingModel(corr={"type": "matern", "nu": 1.5, "ard": False}, poly="linear", normalize=False).fit(x, y)
+    for method in ("hessian", "profile"):
+        ci = m.parameterIntervals(method=method, nGrid=11)
+        assert ci, method
+        for name, row in ci.items():
+            assert row["lower"] <= row["estimate"] <= row["upper"], (method, name, row)
+
+
+def test_greatCircleKrigingInDegrees():
+    rng = np.random.default_rng(2)
+    lonlat = np.column_stack([rng.uniform(-10, 10, 70), rng.uniform(40, 55, 70)])
+    y = np.sin(lonlat[:, 0] / 5) + np.cos(lonlat[:, 1] / 4)
+    m = KrigingModel(corr={"type": "matern", "nu": 1.5, "distance": "greatCircle"}, poly="constant").fit(lonlat, y)
+    t = np.column_stack([rng.uniform(-8, 8, 10), rng.uniform(42, 53, 10)])
+    truth = np.sin(t[:, 0] / 5) + np.cos(t[:, 1] / 4)
+    assert np.max(np.abs(m.predict(t).ravel() - truth)) < 0.1
+    assert m.spatialSummary()["lengthscales"] > 10          # kilometres
+
+
+def test_tpsShorthand():
+    x, y = _spatial(50)
+    m = createModel("tps").fit(x, y)
+    assert m.smoothingValue > 0
+    t = np.random.default_rng(3).uniform(0.2, 2.8, (15, 2))
+    assert np.sqrt(np.mean((m.predict(t).ravel() - np.sin(t[:, 0]) * np.cos(t[:, 1])) ** 2)) < 0.1

@@ -23,8 +23,10 @@ regressionHandler/
   numerics/              SpecialFunctions, Distributions, LinearAlgebra, Optimizers, PLS, NeighborSearch
   bases/                 polynomial, orthogonalPolynomial, radial, bspline, expression, combined
   solvers/               ols, ridge (GCV/LOO), elasticNet, robust (IRLS)
-  kernels/               squaredExponential, matern32/52, absoluteExponential, powerExponential,
-                         rationalQuadratic, periodic, sum/product (analytic gradients, ARD / PLS)
+  kernels/               squaredExponential, matern (any nu, fixed or estimated), matern32/52,
+                         absoluteExponential, wendland (compact support), powerExponential,
+                         rationalQuadratic, periodic, sum/product (analytic gradients, ARD / PLS,
+                         full anisotropy, fixed anisotropy matrix, great-circle distance)
   models/                LinearBasisModel, KrigingModel (KPLS), RbfModel, IdwModel, NonlinearModel,
                          ModelLibrary, SplineModel, LocalRegressionModel (LOESS), ModelFactory
   evaluation/            crossValidate (k-fold, threaded, analytic LOO), ModelSelector / defaultCandidates,
@@ -62,7 +64,7 @@ LinearBasisModel(basis={"type": "polynomial", "degree": 2}, solver={"type": "rob
 ```
 
 Shorthands: `linear`, `quadratic`, `poly<N>`, `ortho<N>`, `ridge-poly<N>`,
-`robust-poly<N>`, `lasso-poly<N>`, `pspline`, `rbf-ridge`, `gp`, `rbf-smooth`,
+`robust-poly<N>`, `lasso-poly<N>`, `pspline`, `rbf-ridge`, `gp`, `rbf-smooth`, `tps`,
 plus the registered types `linearBasis`, `kriging`, `kpls`, `rbf`, `idw`.
 
 ## Models
@@ -70,9 +72,9 @@ plus the registered types `linearBasis`, `kriging`, `kpls`, `rbf`, `idw`.
 | Type | Method | Inputs | Variances | Notes |
 |---|---|---|---|---|
 | `linearBasis` | linear-in-parameter least squares | N-D | yes (OLS/ridge/robust) | any basis x solver; exact LOO |
-| `kriging` | universal Kriging / GP | N-D | yes (universal Kriging) | REML/ML, analytic likelihood gradient, estimated nugget, composable kernels |
+| `kriging` | universal Kriging / GP | N-D | yes (universal Kriging, joint covariance) | REML/ML/GCV, analytic likelihood gradient, estimated nugget, composable kernels, covariates, conditional simulation |
 | `kpls` | Kriging + PLS | high-D | yes | PLS-reduced lengthscales |
-| `rbf` | radial basis functions | N-D | no | LOO (Rippa) smoothing, local `neighbors` mode |
+| `rbf` | radial basis functions | N-D | no | LOO (Rippa) or GCV smoothing, thin-plate spline (`tps`), local `neighbors` mode |
 | `idw` | inverse distance weighting | N-D | no | exact interpolation baseline |
 | `nonlinear` | nonlinear least squares | N-D | yes (delta method) | safe expressions or callables, robust losses, bounds, multi-start |
 | `spline` | penalized B-splines | 1-3 D | yes | P-spline, GCV / LOO smoothing |
@@ -104,6 +106,38 @@ gp.hyperparameters                                                 # lengthscale
 gp.predictVariances(xNew)                                          # universal-Kriging variance
 KrigingModel(corr={"type": "product", "kernels": ["matern52", "periodic"]})
 ```
+
+### Spatial statistics
+
+The Kriging model also covers the classical spatial-statistics workflow:
+maximum-likelihood covariance estimation, effective degrees of freedom, GCV,
+profile likelihoods, parameter intervals and conditional simulation.
+
+```python
+sp = KrigingModel(corr={"type": "matern", "nu": 1.0, "parameterization": "range", "ard": False},
+                  poly="linear", normalize=False, likelihood="ml").fit(x, y)
+sp.spatialSummary()                            # lambda, tau, sigma2, range, effectiveDof, gcv, logLikelihood, ...
+sp.parameterIntervals(method="profile")        # or "hessian"
+sp.predictCovariance(xNew)                     # (ny, m, m) joint posterior covariance
+sp.simulate(xNew, nSamples=100, seed=1)        # conditional simulation, (nSamples, m, ny)
+sp.replicates()                                # replicated sites and pure-error variance
+
+KrigingModel(corr={"type": "matern", "nu": "estimate"})                   # smoothness estimated
+KrigingModel(corr={"type": "wendland", "k": 2, "lengthscale0": 2.0})     # compact support
+KrigingModel(corr={"type": "matern52", "distance": "anisotropic"})       # full geometric anisotropy
+KrigingModel(corr={"type": "matern", "nu": 1.5, "distance": "greatCircle", "radiusUnit": "km"})
+KrigingModel(spatialColumns=[0, 1], poly="linear")      # other columns enter the trend as covariates
+createModel("tps").fit(x, y)                            # thin-plate spline, smoothing by GCV
+```
+
+- `likelihood`: `reml` (default, restricted likelihood), `ml`, `restrictedProfile`
+  (logLikelihood + log|Omega| / 2 with sigma2 = quadratic form / n), or `gcv`
+  (kernel parameters by REML, then lambda by GCV)
+- `parameterization="range"` makes the lengthscale a range parameter a
+  (z = d / a); the default `standard` uses z = sqrt(2 nu) d / l, so
+  nu = 1/2, 3/2, 5/2 equal `absoluteExponential`, `matern32`, `matern52`
+- effective dof and GCV are computed exactly from a generalized eigen-decomposition
+  of the smoother
 
 ## Selection, diagnostics and uncertainty
 
@@ -160,8 +194,11 @@ python -m pytest regressionHandler/tests -q
   null space, the PRESS identity, the Gaussian-process posterior written
   out explicitly, the RBF augmented system, the Cox-de Boor recursion, LOESS
   polynomial reproduction, influence measures from the hat matrix, the
-  nominal size of the normality tests and the known optima of the
-  benchmark functions.
+  nominal size of the normality tests, the known optima of the
+  benchmark functions, Bessel K identities, closed forms of the Matern and
+  Wendland correlations, great-circle distances, the Kriging smoother
+  (effective dof, GCV, profile likelihoods) written out explicitly, conditional
+  simulation moments and the thin-plate spline GCV.
 - the other files test workflows, persistence, model selection and the
   toolBase service.
 
