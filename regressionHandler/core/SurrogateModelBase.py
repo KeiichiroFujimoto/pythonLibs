@@ -68,6 +68,7 @@ class SurrogateModelBase(ABC):
         self.options = OptionsDictionary()
         self.supports = {
             "multiOutput": False,       # trains all outputs jointly
+            "missingOutputs": False,    # accepts NaN for unobserved outputs (heterotopic data)
             "weights": True,            # accepts sample weights
             "variances": False,         # analytic predictive variances / intervals
             "derivatives": False,       # analytic dy/dx (else finite differences)
@@ -129,7 +130,7 @@ class SurrogateModelBase(ABC):
     def setTrainingValues(self, xt, yt, weights=None, featureNames=None, outputNames=None) -> None:
         """Store training data: xt (nt, nx) or (nt,), yt (nt, ny) or (nt,)."""
         x = asFeatureMatrix(xt, name="xt")
-        y = asOutputMatrix(yt, x.shape[0], name="yt")
+        y = asOutputMatrix(yt, x.shape[0], name="yt", allowMissing=self.supports.get("missingOutputs", False))
         w = asWeights(weights, x.shape[0])
         if weights is not None and not self.supports["weights"]:
             raise ValueError(f"{type(self).__name__} does not support sample weights")
@@ -162,7 +163,9 @@ class SurrogateModelBase(ABC):
         self._trained = True
         yHat = self._predictAll(self.xt)
         nEff = np.broadcast_to(np.asarray(self.nEffectiveParams, dtype=float), (self.ny,))
-        self.metrics = [FitMetrics.compute(self.yt[:, j], yHat[:, j], nEff[j], self.wt) for j in range(self.ny)]
+        obs = np.isfinite(self.yt)
+        self.metrics = [FitMetrics.compute(self.yt[obs[:, j], j], yHat[obs[:, j], j], nEff[j], self.wt[obs[:, j]])
+                        for j in range(self.ny)]
         return self
 
     def fit(self, xt, yt, weights=None, featureNames=None, outputNames=None) -> "SurrogateModelBase":
@@ -283,6 +286,45 @@ class SurrogateModelBase(ABC):
                 lower = v * np.sqrt(np.maximum(w, 0.0))
             out[:, :, j] = mean[:, j] + rng.standard_normal((nSamples, c.shape[0])) @ lower.T
         return out
+
+    def predictBlock(self, blocks, weights=None, nPerDim: int = 8) -> dict:
+        """Block prediction: mean and variance of (weighted) averages over regions.
+
+        Args:
+            blocks:   list of regions; each is an (m, nx) array of discretization
+                      points or a box {"lower": [...], "upper": [...]} discretized
+                      by a regular grid of ``nPerDim`` cell centres per input
+            weights:  optional list of (m,) averaging weights (default uniform)
+
+        Returns {"mean": (nb, ny), "variance": (nb, ny), "points": [...]}; the
+        variance is w^T Cov w of the latent posterior at the block points, i.e.
+        the block-Kriging variance of the block average.
+        """
+        means, variances, pointsOut = [], [], []
+        for b, block in enumerate(blocks):
+            pts = self._blockPoints(block, nPerDim)
+            w = np.full(pts.shape[0], 1.0 / pts.shape[0]) if weights is None or weights[b] is None \
+                else np.asarray(weights[b], dtype=float) / float(np.sum(weights[b]))
+            if w.size != pts.shape[0]:
+                raise ValueError("block weights must match the number of block points")
+            means.append(w @ self.predictValues(pts))
+            cov = self.predictCovariance(pts, "confidence")
+            variances.append(np.einsum("i,jik,k->j", w, cov, w))
+            pointsOut.append(pts)
+        return {"mean": np.array(means), "variance": np.maximum(np.array(variances), 0.0), "points": pointsOut}
+
+    def _blockPoints(self, block, nPerDim: int) -> np.ndarray:
+        if isinstance(block, dict):
+            lo = np.asarray(block["lower"], dtype=float)
+            hi = np.asarray(block["upper"], dtype=float)
+            if lo.size != self.nx or hi.size != self.nx or np.any(hi < lo):
+                raise ValueError("block box needs lower <= upper with one entry per input")
+            k = int(block.get("n", nPerDim))
+            axes = [lo[j] + (np.arange(k) + 0.5) * (hi[j] - lo[j]) / k if hi[j] > lo[j] else np.array([lo[j]])
+                    for j in range(self.nx)]
+            grids = np.meshgrid(*axes, indexing="ij")
+            return np.column_stack([g.ravel() for g in grids])
+        return self._validX(block)
 
     def predictGradient(self, x) -> np.ndarray:
         """(n, nx, ny) gradient of every output."""

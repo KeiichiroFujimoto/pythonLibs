@@ -70,6 +70,10 @@ class KernelBase(ComponentBase):
         """Indices of log-lengthscale parameters (tied together for the tied-lengthscale start)."""
         return list(range(self.nParams()))
 
+    def lengthscaleColumns(self) -> list[int]:
+        """Input column (of this kernel's inputs) scaling each entry of ``lengthscaleIndices``."""
+        return [0] * len(self.lengthscaleIndices())
+
     def nParams(self) -> int:
         raise NotImplementedError
 
@@ -95,6 +99,10 @@ class KernelBase(ComponentBase):
     def trainingCache(self, x):
         """Precomputed data reused by every likelihood evaluation on the same inputs."""
         return None
+
+    def batchMatrix(self, xa, xb, p) -> np.ndarray:
+        """Stacked correlation matrices: xa (B, ma, d), xb (B, mb, d) -> (B, ma, mb)."""
+        return np.stack([self.matrix(a, b, p) for a, b in zip(xa, xb)])
 
     def matrixAndGradients(self, x, p, cache=None) -> tuple[np.ndarray, list[np.ndarray]]:
         """Training correlation matrix and its hyperparameter gradients in one pass."""
@@ -181,6 +189,12 @@ class StationaryKernel(KernelBase):
 
     def lengthscaleIndices(self) -> list[int]:
         return [] if self._isCholesky() else list(range(self._nDistance()))
+
+    def lengthscaleColumns(self) -> list[int]:
+        n = len(self.lengthscaleIndices())
+        if self._pls is None and self.options["ard"] and self.options["distance"] == "scaled" and n == self.nx:
+            return list(range(self.nx))
+        return [0] * n
 
     def initialParams(self) -> np.ndarray:
         l0 = np.log(self.options["lengthscale0"]) + self._logUnit
@@ -361,6 +375,21 @@ class StationaryKernel(KernelBase):
     def matrix(self, xa, xb, p) -> np.ndarray:
         pd, ps = self._split(p)
         return self._f(self._r2(xa, xb, pd), ps)
+
+    def batchMatrix(self, xa, xb, p) -> np.ndarray:
+        if self.options["distance"] == "greatCircle":
+            return super().batchMatrix(xa, xb, p)
+        pd, ps = self._split(p)
+        if self._isCholesky():
+            l = self._cholesky(pd)
+            ta, tb, w = xa @ l, xb @ l, np.ones(self.nx)
+        else:
+            ta, tb, w = self._transform(xa), self._transform(xb), self.invL2(pd)
+        r2 = np.zeros((xa.shape[0], xa.shape[1], xb.shape[1]))
+        for k in np.flatnonzero(w):
+            d = ta[:, :, k][:, :, None] - tb[:, :, k][:, None, :]
+            r2 += w[k] * d * d
+        return self._f(r2, ps)
 
     def gradients(self, x, p) -> list[np.ndarray]:
         return self.matrixAndGradients(x, p, None)[1]
@@ -590,6 +619,21 @@ class Wendland(StationaryKernel):
         return t ** (m - 1) * nOverR / 6.0
 
 
+@registry("kernel").register("spherical")
+class Spherical(StationaryKernel):
+    """Spherical correlation 1 - 1.5 r + 0.5 r^3 for r < 1, zero beyond (positive definite up to 3-D)."""
+
+    def f(self, r2):
+        r = np.sqrt(np.asarray(r2, dtype=float))
+        return np.where(r < 1.0, 1.0 - 1.5 * r + 0.5 * r ** 3, 0.0)
+
+    def fPrime(self, r2):
+        # dk/dr2 = (-1.5 + 1.5 r^2) / (2 r); the r -> 0 singularity is multiplied by zero distances
+        r = np.sqrt(np.asarray(r2, dtype=float))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where((r > 0) & (r < 1.0), 0.75 * (r * r - 1.0) / np.where(r > 0, r, 1.0), 0.0)
+
+
 @registry("kernel").register("periodic")
 class Periodic(KernelBase):
     """exp(-sum_k 2 sin^2(pi d_k / P_k) / l_k^2), ARD lengthscales and periods."""
@@ -651,10 +695,287 @@ class Periodic(KernelBase):
         return k * (-2.0 / ell2[kx]) * np.sin(2.0 * u[kx]) * np.pi / per[kx]
 
 
+@registry("kernel").register("gneiting")
+class Gneiting(KernelBase):
+    """Non-separable space-time correlation (Gneiting 2002, eq. 14)::
+
+        psi(u) = (|u| / l_t)^(2 alpha) + 1
+        k(h, u) = psi^-tau * exp(-(||h|| / l_s)^(2 gamma) / psi^(beta gamma)),   tau = d / 2
+
+    h is the spatial lag (``spaceColumns``), u the time lag (``timeColumn``);
+    beta in [0, 1] sets the space-time interaction (0: separable). Estimated
+    parameters: log l_s, log l_t and, with beta="estimate", logit(beta).
+    """
+
+    def _declareOptions(self, declare) -> None:
+        declare("spaceColumns", None, types=list, desc="Spatial input columns (default: all but the time column)")
+        declare("timeColumn", -1, types=int, desc="Time input column")
+        declare("alpha", 1.0, types=(int, float), lower=1e-6, upper=1.0, desc="Temporal smoothness, 0 < alpha <= 1")
+        declare("gamma", 0.5, types=(int, float), lower=1e-6, upper=1.0, desc="Spatial smoothness, 0 < gamma <= 1")
+        declare("beta", "estimate", values=("estimate",), types=(int, float), lower=0.0, upper=1.0,
+                desc="Space-time interaction in [0, 1] or 'estimate'")
+        declare("lengthscale0", 1.0, types=(int, float), lower=0.0, desc="Initial space / time lengthscale")
+        declare("lengthscaleBounds", [1e-3, 1e3], types=list, desc="Lengthscale bounds")
+
+    def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
+        if nx < 2:
+            raise ValueError("gneiting needs at least one space and one time input")
+        self.nx = nx
+        self._t = self.options["timeColumn"] % nx
+        sc = self.options["spaceColumns"]
+        self._s = np.array([j for j in range(nx) if j != self._t]) if sc is None else np.asarray(sc, dtype=int)
+        self._logUnit = float(np.log(unitScale)) if unitScale > 0 else 0.0
+        return self
+
+    def _estBeta(self) -> bool:
+        return self.options["beta"] == "estimate"
+
+    def nParams(self) -> int:
+        return 2 + self._estBeta()
+
+    def lengthscaleIndices(self) -> list[int]:
+        return [0, 1]
+
+    def lengthscaleColumns(self) -> list[int]:
+        return [int(self._s[0]), int(self._t)]
+
+    def initialParams(self) -> np.ndarray:
+        l0 = np.log(self.options["lengthscale0"]) + self._logUnit
+        return np.array([l0, l0] + ([0.0] if self._estBeta() else []))
+
+    def bounds(self) -> np.ndarray:
+        lo, hi = np.log(self.options["lengthscaleBounds"]) + self._logUnit
+        b = [[lo, hi], [lo, hi]] + ([[-8.0, 8.0]] if self._estBeta() else [])
+        return np.array(b)
+
+    def paramNames(self) -> list[str]:
+        return ["log_lengthscaleSpace", "log_lengthscaleTime"] + (["logit_beta"] if self._estBeta() else [])
+
+    def _beta(self, p) -> float:
+        return float(1.0 / (1.0 + np.exp(-p[2]))) if self._estBeta() else float(self.options["beta"])
+
+    def matrix(self, xa, xb, p) -> np.ndarray:
+        p = np.asarray(p, dtype=float)
+        a, g = float(self.options["alpha"]), float(self.options["gamma"])
+        d = self._s.size
+        h2 = weightedSqDist(xa[:, self._s], xb[:, self._s], np.full(d, np.exp(-2.0 * p[0])))
+        u = np.abs(xa[:, self._t][:, None] - xb[:, self._t][None, :]) * np.exp(-p[1])
+        psi = u ** (2.0 * a) + 1.0
+        beta = self._beta(p)
+        return psi ** (-0.5 * d) * np.exp(-(h2 ** g) / psi ** (beta * g))
+
+    def gradients(self, x, p) -> list[np.ndarray]:
+        p = np.asarray(p, dtype=float)
+        out = []
+        for i in range(p.size):
+            step = 1e-6 * max(1.0, abs(p[i]))
+            up, dn = p.copy(), p.copy()
+            up[i] += step
+            dn[i] -= step
+            out.append((self.matrix(x, x, up) - self.matrix(x, x, dn)) / (2.0 * step))
+        return out
+
+    def dx(self, xa, xb, p, kx: int) -> np.ndarray:
+        scale = max(1.0, float(np.max(np.abs(xa[:, kx])))) if xa.size else 1.0
+        step = 1e-6 * scale
+        up, dn = xa.copy(), xa.copy()
+        up[:, kx] += step
+        dn[:, kx] -= step
+        return (self.matrix(up, xb, p) - self.matrix(dn, xb, p)) / (2.0 * step)
+
+
+class _WrappedKernel(KernelBase):
+    """Kernel built around one child kernel; gradients and input derivatives by central differences."""
+
+    def _child(self) -> KernelBase:
+        if not hasattr(self, "_built"):
+            self._built = buildComponent("kernel", self.options["kernel"])
+            self.options["kernel"] = self._built
+        return self._built
+
+    def gradients(self, x, p) -> list[np.ndarray]:
+        p = np.asarray(p, dtype=float)
+        out = []
+        for i in range(p.size):
+            step = 1e-6 * max(1.0, abs(p[i]))
+            up, dn = p.copy(), p.copy()
+            up[i] += step
+            dn[i] -= step
+            out.append((self.matrix(x, x, up) - self.matrix(x, x, dn)) / (2.0 * step))
+        return out
+
+    def dx(self, xa, xb, p, kx: int) -> np.ndarray:
+        step = 1e-6 * max(1.0, float(np.max(np.abs(xa[:, kx])))) if xa.size else 1e-6
+        up, dn = xa.copy(), xa.copy()
+        up[:, kx] += step
+        dn[:, kx] -= step
+        return (self.matrix(up, xb, p) - self.matrix(dn, xb, p)) / (2.0 * step)
+
+
+@registry("kernel").register("warped")
+class WarpedKernel(_WrappedKernel):
+    """Stationary kernel on monotonically warped inputs (non-stationarity through input warping).
+
+    Each input is mapped by the sinh-arcsinh transform
+        w(u) = sinh(delta * asinh(u) - epsilon)
+    (identity at delta = 1, epsilon = 0) with log(delta) and epsilon estimated
+    per input, then passed to the child kernel.
+    """
+
+    def _declareOptions(self, declare) -> None:
+        declare("kernel", "matern52", types=(str, dict, object), desc="Child kernel on the warped inputs")
+        declare("warpBounds", [-2.0, 2.0], types=list, desc="Bounds of log(delta) and epsilon")
+
+    def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
+        self.nx = nx
+        self._child().setup(nx, None, unitScale)
+        return self
+
+    def nParams(self) -> int:
+        return self._child().nParams() + 2 * self.nx
+
+    def lengthscaleIndices(self) -> list[int]:
+        return self._child().lengthscaleIndices()
+
+    def lengthscaleColumns(self) -> list[int]:
+        return self._child().lengthscaleColumns()
+
+    def initialParams(self) -> np.ndarray:
+        return np.concatenate([self._child().initialParams(), np.zeros(2 * self.nx)])
+
+    def bounds(self) -> np.ndarray:
+        lo, hi = self.options["warpBounds"]
+        return np.vstack([self._child().bounds(), np.tile([lo, hi], (2 * self.nx, 1))])
+
+    def paramNames(self) -> list[str]:
+        return self._child().paramNames() + [f"log_warpDelta{i}" for i in range(self.nx)] + \
+            [f"warpEpsilon{i}" for i in range(self.nx)]
+
+    def _warp(self, x, p):
+        nc = self._child().nParams()
+        delta = np.exp(p[nc:nc + self.nx])
+        eps = p[nc + self.nx:]
+        return np.sinh(delta * np.arcsinh(x) - eps)
+
+    def warp(self, x, p) -> np.ndarray:
+        """Warped inputs (for inspection)."""
+        return self._warp(np.asarray(x, dtype=float), np.asarray(p, dtype=float))
+
+    def matrix(self, xa, xb, p) -> np.ndarray:
+        p = np.asarray(p, dtype=float)
+        nc = self._child().nParams()
+        return self._child().matrix(self._warp(xa, p), self._warp(xb, p), p[:nc])
+
+    def batchMatrix(self, xa, xb, p) -> np.ndarray:
+        p = np.asarray(p, dtype=float)
+        nc = self._child().nParams()
+        return self._child().batchMatrix(self._warp(xa, p), self._warp(xb, p), p[:nc])
+
+
+@registry("kernel").register("nonstationary")
+class NonstationaryKernel(_WrappedKernel):
+    """Isotropic kernel with a spatially varying lengthscale (Paciorek & Schervish 2006)::
+
+        k(x, x') = (2 l l' / (l^2 + l'^2))^(d/2) * rho(|x - x'|^2 / ((l^2 + l'^2) / 2))
+        log l(x) = c_0 + sum_j c_j phi_j(x)
+
+    rho is the correlation profile of the child stationary kernel. phi:
+    "linear" (the inputs) or "rbf" (Gaussian bumps on a grid of ``nCenters``
+    centres over the standardized input box [-2, 2]^d).
+    """
+
+    def _declareOptions(self, declare) -> None:
+        declare("kernel", "matern52", types=(str, dict, object), desc="Stationary child (its correlation profile)")
+        declare("basis", "linear", values=("linear", "rbf"), desc="Basis of the log-lengthscale field")
+        declare("nCenters", 9, types=int, lower=1, desc="RBF centres (rounded to a grid)")
+        declare("lengthscale0", 1.0, types=(int, float), lower=0.0, desc="Initial lengthscale")
+        declare("lengthscaleBounds", [1e-3, 1e3], types=list, desc="Bounds of the base lengthscale")
+        declare("coefficientBounds", [-3.0, 3.0], types=list, desc="Bounds of the field coefficients")
+
+    def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
+        self.nx = nx
+        child = self._child()
+        if not isinstance(child, StationaryKernel):
+            raise ValueError("nonstationary needs a stationary child kernel")
+        child.options["ard"] = False
+        child.setup(nx)
+        self._nShapeChild = child.nParams() - 1
+        self._logUnit = float(np.log(unitScale)) if unitScale > 0 else 0.0
+        if self.options["basis"] == "rbf":
+            k = max(2, int(round(self.options["nCenters"] ** (1.0 / nx))))
+            axes = [np.linspace(-2.0, 2.0, k)] * nx
+            grids = np.meshgrid(*axes, indexing="ij")
+            self._centers = np.column_stack([g.ravel() for g in grids])
+            self._width = 4.0 / (k - 1)
+        return self
+
+    def _nBasis(self) -> int:
+        return self.nx if self.options["basis"] == "linear" else self._centers.shape[0]
+
+    def nParams(self) -> int:
+        return 1 + self._nBasis() + self._nShapeChild
+
+    def lengthscaleIndices(self) -> list[int]:
+        return [0]
+
+    def initialParams(self) -> np.ndarray:
+        child = self._child()
+        shape = child.initialParams()[1:]
+        return np.concatenate([[np.log(self.options["lengthscale0"]) + self._logUnit], np.zeros(self._nBasis()), shape])
+
+    def bounds(self) -> np.ndarray:
+        lo, hi = np.log(self.options["lengthscaleBounds"]) + self._logUnit
+        clo, chi = self.options["coefficientBounds"]
+        return np.vstack([[[lo, hi]], np.tile([clo, chi], (self._nBasis(), 1)), self._child().bounds()[1:]])
+
+    def paramNames(self) -> list[str]:
+        return ["log_lengthscale0"] + [f"field{j}" for j in range(self._nBasis())] + self._child().paramNames()[1:]
+
+    def _phi(self, x) -> np.ndarray:
+        if self.options["basis"] == "linear":
+            return x
+        d2 = np.sum((x[..., None, :] - self._centers) ** 2, axis=-1)
+        return np.exp(-0.5 * d2 / self._width ** 2)
+
+    def lengthscale(self, x, p) -> np.ndarray:
+        """l(x) on standardized inputs."""
+        p = np.asarray(p, dtype=float)
+        nb = self._nBasis()
+        return np.exp(p[0] + self._phi(np.asarray(x, dtype=float)) @ p[1:1 + nb])
+
+    def _core(self, xa, xb, p, batched: bool):
+        p = np.asarray(p, dtype=float)
+        la, lb = self.lengthscale(xa, p), self.lengthscale(xb, p)
+        l2a, l2b = (la ** 2)[..., :, None], (lb ** 2)[..., None, :]
+        mean = 0.5 * (l2a + l2b)
+        if batched:
+            d2 = np.sum((xa[:, :, None, :] - xb[:, None, :, :]) ** 2, axis=-1)
+        else:
+            d2 = weightedSqDist(xa, xb, np.ones(self.nx))
+        pre = (np.sqrt(l2a * l2b) / mean) ** (0.5 * self.nx)
+        child = self._child()
+        ps = p[1 + self._nBasis():]
+        return pre * child._f(d2 / mean, ps)
+
+    def matrix(self, xa, xb, p) -> np.ndarray:
+        return self._core(xa, xb, p, False)
+
+    def batchMatrix(self, xa, xb, p) -> np.ndarray:
+        return self._core(xa, xb, p, True)
+
+
 class _CompositeKernel(KernelBase):
+    """Base of sum / product kernels.
+
+    ``columns`` (optional, one entry per child) restricts each child to a
+    subset of the input columns, e.g. a space x time product::
+
+        {"type": "product", "kernels": ["matern52", "absoluteExponential"], "columns": [[0, 1], [2]]}
+    """
 
     def _declareOptions(self, declare) -> None:
         declare("kernels", [], types=list, desc="Child kernel specs or instances")
+        declare("columns", None, types=list, desc="Input columns of each child (default: all columns)")
 
     def _children(self) -> list[KernelBase]:
         if not hasattr(self, "_built"):
@@ -664,14 +985,52 @@ class _CompositeKernel(KernelBase):
 
     def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
         self.nx = nx
-        for k in self._children():
-            k.setup(nx, plsWeights, unitScale)
+        cols = self.options["columns"]
+        kids = self._children()
+        if cols is None:
+            self._cols = [None] * len(kids)
+        else:
+            if len(cols) != len(kids):
+                raise ValueError("columns needs one entry per child kernel")
+            self._cols = [None if c is None else np.asarray(c, dtype=int) for c in cols]
+            for c in self._cols:
+                if c is not None and (c.size == 0 or c.min() < 0 or c.max() >= nx):
+                    raise ValueError("child columns must be valid input indices")
+            if plsWeights is not None and any(c is not None for c in self._cols):
+                raise ValueError("per-child columns cannot be combined with PLS weights")
+        for k, c in zip(kids, self._cols):
+            k.setup(nx if c is None else c.size, plsWeights, unitScale)
         return self
+
+    def _sub(self, x, i):
+        c = self._cols[i]
+        return x if c is None else x[..., c]
+
+    def _localColumn(self, i, kx):
+        """Index of input kx within child i, or None when the child does not use it."""
+        c = self._cols[i]
+        if c is None:
+            return kx
+        where = np.flatnonzero(c == kx)
+        return int(where[0]) if where.size else None
+
+    def _childDx(self, i, k, xa, xb, p, kx):
+        local = self._localColumn(i, kx)
+        if local is None:
+            return np.zeros((xa.shape[0], xb.shape[0]))
+        return k.dx(self._sub(xa, i), self._sub(xb, i), p, local)
 
     def lengthscaleIndices(self) -> list[int]:
         out = []
         for k, sl in zip(self._children(), self._slices()):
             out.extend(sl.start + i for i in k.lengthscaleIndices())
+        return out
+
+    def lengthscaleColumns(self) -> list[int]:
+        out = []
+        for i, k in enumerate(self._children()):
+            c = self._cols[i] if hasattr(self, "_cols") else None
+            out.extend(j if c is None else int(c[j]) for j in k.lengthscaleColumns())
         return out
 
     def _slices(self):
@@ -694,7 +1053,7 @@ class _CompositeKernel(KernelBase):
         return [f"k{i}.{n}" for i, k in enumerate(self._children()) for n in k.paramNames()]
 
     def trainingCache(self, x):
-        return [k.trainingCache(x) for k in self._children()]
+        return [k.trainingCache(self._sub(x, i)) for i, k in enumerate(self._children())]
 
 
 @registry("kernel").register("sum")
@@ -703,52 +1062,55 @@ class SumKernel(_CompositeKernel):
 
     def matrix(self, xa, xb, p):
         ks = self._children()
-        return sum(k.matrix(xa, xb, p[s]) for k, s in zip(ks, self._slices())) / len(ks)
+        return sum(k.matrix(self._sub(xa, i), self._sub(xb, i), p[s])
+                   for i, (k, s) in enumerate(zip(ks, self._slices()))) / len(ks)
 
     def gradients(self, x, p):
-        ks = self._children()
-        return [g / len(ks) for k, s in zip(ks, self._slices()) for g in k.gradients(x, p[s])]
+        return self.matrixAndGradients(x, p)[1]
 
     def matrixAndGradients(self, x, p, cache=None):
         ks = self._children()
         cache = cache or [None] * len(ks)
         mats, grads = [], []
-        for k, s, c in zip(ks, self._slices(), cache):
-            m, g = k.matrixAndGradients(x, p[s], c)
+        for i, (k, s, c) in enumerate(zip(ks, self._slices(), cache)):
+            m, g = k.matrixAndGradients(self._sub(x, i), p[s], c)
             mats.append(m)
             grads.extend(gi / len(ks) for gi in g)
         return sum(mats) / len(ks), grads
 
     def dx(self, xa, xb, p, kx):
         ks = self._children()
-        return sum(k.dx(xa, xb, p[s], kx) for k, s in zip(ks, self._slices())) / len(ks)
+        return sum(self._childDx(i, k, xa, xb, p[s], kx) for i, (k, s) in enumerate(zip(ks, self._slices()))) / len(ks)
+
+    def batchMatrix(self, xa, xb, p):
+        ks = self._children()
+        return sum(k.batchMatrix(self._sub(xa, i), self._sub(xb, i), p[s])
+                   for i, (k, s) in enumerate(zip(ks, self._slices()))) / len(ks)
 
 
 @registry("kernel").register("product")
 class ProductKernel(_CompositeKernel):
+    """Product of child correlations (e.g. separable space x time)."""
 
     def matrix(self, xa, xb, p):
         out = 1.0
-        for k, s in zip(self._children(), self._slices()):
-            out = out * k.matrix(xa, xb, p[s])
+        for i, (k, s) in enumerate(zip(self._children(), self._slices())):
+            out = out * k.matrix(self._sub(xa, i), self._sub(xb, i), p[s])
         return out
 
     def gradients(self, x, p):
-        ks, sl = self._children(), self._slices()
-        mats = [k.matrix(x, x, p[s]) for k, s in zip(ks, sl)]
-        out = []
-        for i, (k, s) in enumerate(zip(ks, sl)):
-            others = 1.0
-            for j, m in enumerate(mats):
-                if j != i:
-                    others = others * m
-            out.extend(g * others for g in k.gradients(x, p[s]))
+        return self.matrixAndGradients(x, p)[1]
+
+    def batchMatrix(self, xa, xb, p):
+        out = 1.0
+        for i, (k, s) in enumerate(zip(self._children(), self._slices())):
+            out = out * k.batchMatrix(self._sub(xa, i), self._sub(xb, i), p[s])
         return out
 
     def matrixAndGradients(self, x, p, cache=None):
         ks, sl = self._children(), self._slices()
         cache = cache or [None] * len(ks)
-        parts = [k.matrixAndGradients(x, p[s], c) for k, s, c in zip(ks, sl, cache)]
+        parts = [k.matrixAndGradients(self._sub(x, i), p[s], c) for i, (k, s, c) in enumerate(zip(ks, sl, cache))]
         total = 1.0
         for m, _ in parts:
             total = total * m
@@ -763,10 +1125,10 @@ class ProductKernel(_CompositeKernel):
 
     def dx(self, xa, xb, p, kx):
         ks, sl = self._children(), self._slices()
-        mats = [k.matrix(xa, xb, p[s]) for k, s in zip(ks, sl)]
+        mats = [k.matrix(self._sub(xa, i), self._sub(xb, i), p[s]) for i, (k, s) in enumerate(zip(ks, sl))]
         total = 0.0
         for i, (k, s) in enumerate(zip(ks, sl)):
-            term = k.dx(xa, xb, p[s], kx)
+            term = self._childDx(i, k, xa, xb, p[s], kx)
             for j, m in enumerate(mats):
                 if j != i:
                     term = term * m

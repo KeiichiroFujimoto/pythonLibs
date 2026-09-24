@@ -227,3 +227,36 @@ def test_tpsShorthand():
     assert m.smoothingValue > 0
     t = np.random.default_rng(3).uniform(0.2, 2.8, (15, 2))
     assert np.sqrt(np.mean((m.predict(t).ravel() - np.sin(t[:, 0]) * np.cos(t[:, 1])) ** 2)) < 0.1
+
+
+# ---------------------------------------------------------------- extended spatial models
+def test_cokrigingAndScalableRoundTrip():
+    rng = np.random.default_rng(0)
+    x = rng.uniform(0, 3, (40, 2))
+    y = np.column_stack([np.sin(x[:, 0]), np.sin(x[:, 0]) + 0.2 * x[:, 1]]) + 0.02 * rng.standard_normal((40, 2))
+    y[25:, 0] = np.nan
+    t = rng.uniform(0.2, 2.8, (10, 2))
+    from pythonLibs.regressionHandler import CokrigingModel, ScalableKrigingModel
+    for m in (CokrigingModel(nStart=2).fit(x, y),
+              ScalableKrigingModel(neighbors=10).fit(x, y[:, 1]),
+              ScalableKrigingModel(approximation="fitc", nInducing=20).fit(x, y[:, 1])):
+        loaded = SurrogateModelBase.fromDict(json.loads(json.dumps(m.toDict())))
+        np.testing.assert_allclose(loaded.predict(t), m.predict(t), rtol=1e-8, atol=1e-10)
+        np.testing.assert_allclose(loaded.predictVariances(t), m.predictVariances(t), rtol=1e-7)
+        assert "logLikelihood" in m.hyperparameters
+
+
+def test_spaceTimeAndNonstationaryFit():
+    rng = np.random.default_rng(1)
+    x = np.column_stack([rng.uniform(0, 3, 80), rng.uniform(0, 3, 80), rng.uniform(0, 4, 80)])
+    y = np.sin(x[:, 0] + 0.5 * x[:, 2]) * np.cos(x[:, 1])
+    t = np.column_stack([rng.uniform(0.3, 2.7, 10), rng.uniform(0.3, 2.7, 10), rng.uniform(0.5, 3.5, 10)])
+    truth = np.sin(t[:, 0] + 0.5 * t[:, 2]) * np.cos(t[:, 1])
+    for corr in ({"type": "gneiting"},
+                 {"type": "product", "kernels": [{"type": "matern52", "ard": False}, "matern52"], "columns": [[0, 1], [2]]},
+                 {"type": "warped", "kernel": "matern52"},
+                 {"type": "nonstationary", "kernel": "matern52"}):
+        m = KrigingModel(corr=corr, poly="constant").fit(x, y)
+        assert np.sqrt(np.mean((m.predict(t).ravel() - truth) ** 2)) < 0.15, corr
+        loaded = SurrogateModelBase.fromDict(json.loads(json.dumps(m.toDict())))
+        np.testing.assert_allclose(loaded.predict(t), m.predict(t), rtol=1e-8, atol=1e-10)

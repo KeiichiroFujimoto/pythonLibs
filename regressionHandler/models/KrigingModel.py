@@ -476,10 +476,10 @@ class KrigingModel(SurrogateModelBase):
         names = self._kernel.paramNames() + (["log_nugget"] if self._autoNugget else [])
         out = {}
         nk = self._kernel.nParams()
-        lsIdx = set(self._kernel.lengthscaleIndices())
+        lsCol = dict(zip(self._kernel.lengthscaleIndices(), self._kernel.lengthscaleColumns()))
         for i, name in enumerate(names):
-            if i in lsIdx and self._pls is None:
-                col = self._sc[i] if len(lsIdx) == self._sc.size else self._sc[0]
+            if i in lsCol and self._pls is None:
+                col = self._sc[lsCol[i]]
                 scale = self._xStd[col] if self._kernel.options.get("distance", "scaled") != "greatCircle" else 1.0
                 out[name.replace("log_", "")] = float(np.exp(logP[i]) * scale)
             elif name == "log_nu":
@@ -579,7 +579,7 @@ class KrigingModel(SurrogateModelBase):
                "logLikelihood": self._logLik,
                "trendCoefficients": self._beta.tolist()}
         report = self._paramReport(self._params)
-        lengths = [v for k, v in report.items() if k.startswith("lengthscale")]
+        lengths = [v for k, v in report.items() if "engthscale" in k]
         if lengths:
             out["lengthscales"] = lengths
         if "nu" in report:
@@ -607,7 +607,7 @@ class KrigingModel(SurrogateModelBase):
             ar = ranges(self._kp) * self._xStd[self._sc][: ranges(self._kp).size]
             out["range"] = ar.tolist() if ar.size > 1 else float(ar[0])
         else:
-            lengths = [v for k, v in report.items() if k.startswith("lengthscale")]
+            lengths = [v for k, v in report.items() if "engthscale" in k]
             if lengths:
                 out["lengthscales"] = lengths if len(lengths) > 1 else lengths[0]
         if "nu" in report:
@@ -616,6 +616,52 @@ class KrigingModel(SurrogateModelBase):
         if rep["nGroups"] < self._xs.shape[0]:
             out["pureErrorVariance"] = rep["pureErrorVariance"]
         return out
+
+    # ------------------------------------------------------------------ leave-one-out
+    def _looScaled(self) -> tuple[np.ndarray, np.ndarray]:
+        """LOO residuals and prediction variances on the standardized scale (Dubrule 1983).
+
+        With covariance parameters held fixed and the trend re-estimated
+        without point i: y_i - yhat_(-i) = (P y)_i / P_ii and the prediction
+        variance of y_i is sigma2 / P_ii, where
+        P = C^-1 - C^-1 F (F^T C^-1 F)^-1 F^T C^-1.
+        """
+        n = self._xs.shape[0]
+        lInv = solveTriangular(self._chol, np.eye(n), lower=True)
+        cInv = lInv.T @ lInv
+        if self._f.shape[1]:
+            cf = cInv @ self._f
+            proj = cInv - cf @ self._aInv @ cf.T
+        else:
+            proj = cInv
+        d = np.diag(proj)
+        return (proj @ self._ys) / d, self._sigma2 / d
+
+    def looResiduals(self) -> np.ndarray:
+        """Exact leave-one-out residuals y_i - yhat_(-i), shape (n, ny) (covariance parameters held fixed)."""
+        self._checkTrained()
+        if self._subModels is not None:
+            return np.hstack([m.looResiduals() for m in self._subModels])
+        r, _ = self._looScaled()
+        return (r * self._yStd)[:, None]
+
+    def looDiagnostics(self) -> dict:
+        """Exact LOO predictions, residuals, prediction variances and standardized residuals.
+
+        For a well-specified covariance model the standardized residuals have
+        mean ~0 and variance ~1 (``meanSquaredStandardized``).
+        """
+        self._checkTrained()
+        if self._subModels is not None:
+            return {"outputs": [m.looDiagnostics() for m in self._subModels]}
+        r, v = self._looScaled()
+        resid = r * self._yStd
+        var = v * self._yStd ** 2
+        z = resid / np.sqrt(var)
+        y = self._ys * self._yStd + self._yMean
+        return {"predictions": y - resid, "residuals": resid, "variances": var, "standardized": z,
+                "rmse": float(np.sqrt(np.mean(resid ** 2))), "meanStandardized": float(np.mean(z)),
+                "meanSquaredStandardized": float(np.mean(z * z))}
 
     def replicates(self) -> dict:
         """Replicated input locations and the pure-error variance they imply."""

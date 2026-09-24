@@ -38,8 +38,12 @@ def asFeatureMatrix(x, nFeatures: Optional[int] = None, name: str = "x") -> np.n
     return arr
 
 
-def asOutputMatrix(y, nSamples: int, name: str = "y") -> np.ndarray:
-    """Return ``y`` as a finite float array of shape (nSamples, nOutputs)."""
+def asOutputMatrix(y, nSamples: int, name: str = "y", allowMissing: bool = False) -> np.ndarray:
+    """Return ``y`` as a float array of shape (nSamples, nOutputs).
+
+    Values must be finite; with ``allowMissing`` NaN marks an unobserved output
+    (every row still needs at least one observed value).
+    """
     arr = np.asarray(y, dtype=float)
     if arr.ndim <= 1:
         arr = arr.reshape(-1, 1)
@@ -47,7 +51,10 @@ def asOutputMatrix(y, nSamples: int, name: str = "y") -> np.ndarray:
         raise ValueError(f"{name} must be 1D or 2D, got {arr.ndim}D")
     if arr.shape[0] != nSamples:
         raise ValueError(f"{name} has {arr.shape[0]} rows, expected {nSamples}")
-    if not np.all(np.isfinite(arr)):
+    if allowMissing:
+        if np.any(np.isinf(arr)) or np.any(np.all(np.isnan(arr), axis=1)):
+            raise ValueError(f"{name} contains infinite values or rows without any observed output")
+    elif not np.all(np.isfinite(arr)):
         raise ValueError(f"{name} contains non-finite values")
     return arr
 

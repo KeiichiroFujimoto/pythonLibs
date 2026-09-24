@@ -24,13 +24,16 @@ regressionHandler/
   bases/                 polynomial, orthogonalPolynomial, radial, bspline, expression, combined
   solvers/               ols, ridge (GCV/LOO), elasticNet, robust (IRLS)
   kernels/               squaredExponential, matern (any nu, fixed or estimated), matern32/52,
-                         absoluteExponential, wendland (compact support), powerExponential,
-                         rationalQuadratic, periodic, sum/product (analytic gradients, ARD / PLS,
+                         absoluteExponential, wendland, spherical, powerExponential,
+                         rationalQuadratic, periodic, gneiting (space-time), warped / nonstationary,
+                         sum/product with per-child columns (analytic gradients, ARD / PLS,
                          full anisotropy, fixed anisotropy matrix, great-circle distance)
-  models/                LinearBasisModel, KrigingModel (KPLS), RbfModel, IdwModel, NonlinearModel,
+  models/                LinearBasisModel, KrigingModel (KPLS), CokrigingModel, ScalableKrigingModel,
+                         RbfModel, IdwModel, NonlinearModel,
                          ModelLibrary, SplineModel, LocalRegressionModel (LOESS), ModelFactory
   evaluation/            crossValidate (k-fold, threaded, analytic LOO), ModelSelector / defaultCandidates,
-                         tuneHyperparameters, stepwiseSelect, diagnose, bootstrap, modelReport
+                         tuneHyperparameters, stepwiseSelect, diagnose, bootstrap, modelReport,
+                         empiricalVariogram / fitVariogram
   sampling/              latinHypercube (maximin / ESE), fullFactorial, randomSampling, sobolLike,
                          benchmark problems (branin, rosenbrock, sphere, ackley, hartmann3/6, ishigami, friedman)
   tests/
@@ -74,6 +77,8 @@ plus the registered types `linearBasis`, `kriging`, `kpls`, `rbf`, `idw`.
 | `linearBasis` | linear-in-parameter least squares | N-D | yes (OLS/ridge/robust) | any basis x solver; exact LOO |
 | `kriging` | universal Kriging / GP | N-D | yes (universal Kriging, joint covariance) | REML/ML/GCV, analytic likelihood gradient, estimated nugget, composable kernels, covariates, conditional simulation |
 | `kpls` | Kriging + PLS | high-D | yes | PLS-reduced lengthscales |
+| `cokriging` | multi-output Kriging (ICM / LMC) | N-D | yes | correlated outputs, outputs observed at different inputs (NaN) |
+| `scalableKriging` | Vecchia / FITC Kriging | N-D, n ~ 10^5 | yes | nearest-neighbour or inducing-point likelihood and predictor |
 | `rbf` | radial basis functions | N-D | no | LOO (Rippa) or GCV smoothing, thin-plate spline (`tps`), local `neighbors` mode |
 | `idw` | inverse distance weighting | N-D | no | exact interpolation baseline |
 | `nonlinear` | nonlinear least squares | N-D | yes (delta method) | safe expressions or callables, robust losses, bounds, multi-start |
@@ -139,6 +144,36 @@ createModel("tps").fit(x, y)                            # thin-plate spline, smo
 - effective dof and GCV are computed exactly from a generalized eigen-decomposition
   of the smoother
 
+```python
+from pythonLibs.regressionHandler import CokrigingModel, ScalableKrigingModel
+from pythonLibs.regressionHandler.evaluation import empiricalVariogram, fitVariogram
+
+sp.looDiagnostics()                            # exact LOO: residuals, variances, standardized residuals
+sp.predictBlock([{"lower": [0, 0], "upper": [1, 1]}])     # block average and its variance
+
+ev = empiricalVariogram(x, y, nBins=15, estimator="robust", direction=45)   # directional, robust
+vf = fitVariogram(ev, "matern", nu=1.0)                   # WLS fit: nugget, partialSill, range
+KrigingModel(poly="constant", **vf.krigingOptions()).fit(x, y)
+
+KrigingModel(corr={"type": "gneiting"})                   # non-separable space-time (time = last column)
+KrigingModel(corr={"type": "product", "kernels": ["matern52", "exponential"], "columns": [[0, 1], [2]]})
+KrigingModel(corr={"type": "nonstationary", "kernel": "matern52", "basis": "rbf"})   # varying lengthscale
+KrigingModel(corr={"type": "warped", "kernel": "matern52"})                          # input warping
+
+CokrigingModel(corr="matern52").fit(x, yMulti)            # yMulti (n, ny), NaN = not observed
+CokrigingModel(corr=["squaredExponential", "matern32"], rank=1)                     # LMC
+ScalableKrigingModel(approximation="vecchia", neighbors=20).fit(xLarge, yLarge)
+ScalableKrigingModel(approximation="fitc", nInducing=300).fit(xLarge, yLarge)
+```
+
+- LOO holds the covariance parameters fixed and re-estimates the trend (exact
+  for fixed parameters)
+- variogram estimators: classical and Cressie-Hawkins; models: exponential,
+  gaussian, spherical, cubic, matern, wendland; weights Cressie, counts or equal
+- scalable Kriging: max-min ordering, previous-neighbour sets from a grid index,
+  batched conditionals (O(n m^3)); the optimizer starts from an exact fit on a
+  subsample. With all neighbours (or all points inducing) it equals exact Kriging
+
 ## Selection, diagnostics and uncertainty
 
 ```python
@@ -198,7 +233,10 @@ python -m pytest regressionHandler/tests -q
   benchmark functions, Bessel K identities, closed forms of the Matern and
   Wendland correlations, great-circle distances, the Kriging smoother
   (effective dof, GCV, profile likelihoods) written out explicitly, conditional
-  simulation moments and the thin-plate spline GCV.
+  simulation moments, the thin-plate spline GCV, exact LOO against refits,
+  variogram estimators against brute force, block prediction, space-time and
+  non-stationary kernel closed forms, cokriging reducing to Kriging, and
+  Vecchia / FITC reducing to exact Kriging.
 - the other files test workflows, persistence, model selection and the
   toolBase service.
 
