@@ -432,6 +432,9 @@ class SquaredExponential(StationaryKernel):
     def fPrime(self, r2):
         return -0.5 * np.exp(-0.5 * r2)
 
+    def fPrime2(self, r2, ps=None):
+        return 0.25 * np.exp(-0.5 * r2)
+
 
 @registry("kernel").register("absoluteExponential")
 class AbsoluteExponential(StationaryKernel):
@@ -467,6 +470,9 @@ class Matern52(StationaryKernel):
     def fPrime(self, r2):
         s = np.sqrt(5.0 * r2)
         return -(5.0 / 6.0) * (1.0 + s) * np.exp(-s)
+
+    def fPrime2(self, r2, ps=None):
+        return (25.0 / 12.0) * np.exp(-np.sqrt(5.0 * r2))
 
 
 @registry("kernel").register("powerExponential")
@@ -564,6 +570,26 @@ class Matern(StationaryKernel):
             logc = (1.0 - nu) * np.log(2.0) - _sf.gammaln(nu)
             with np.errstate(under="ignore"):
                 out[pos] = -0.5 * s2 * np.exp(logc + (nu - 1.0) * np.log(zp)) * _sf.besselK(abs(nu - 1.0), zp)
+        return out
+
+    def fPrime2(self, r2, ps):
+        """d^2 k / d(r2)^2 = c (s2^2 / 4) z^(nu-2) K_(nu-2)(z) for r2 > 0 (twice differentiable for nu > 1).
+
+        Where it diverges (r2 = 0, nu <= 2) it only multiplies zero distances in
+        second derivatives of the kernel; 0 is returned there.
+        """
+        nu = self._nu(ps)
+        s2 = self._scale2(nu)
+        z = np.sqrt(s2 * np.asarray(r2, dtype=float))
+        out = np.zeros_like(z)
+        if nu > 2.0:
+            out[:] = s2 * s2 / (16.0 * (nu - 1.0) * (nu - 2.0))       # limit at z = 0
+        pos = z > 0
+        if np.any(pos):
+            zp = z[pos]
+            logc = (1.0 - nu) * np.log(2.0) - _sf.gammaln(nu)
+            with np.errstate(under="ignore"):
+                out[pos] = 0.25 * s2 * s2 * np.exp(logc + (nu - 2.0) * np.log(zp)) * _sf.besselK(abs(nu - 2.0), zp)
         return out
 
     def rangeParameters(self, p) -> np.ndarray:

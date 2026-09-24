@@ -37,11 +37,17 @@ SHORTHANDS = {
     "gp": "Gaussian process / Kriging, Matern 5/2 ARD kernel, estimated noise",
     "rbf-smooth": "RBF (thin-plate spline) with leave-one-out smoothing",
     "tps": "Thin-plate spline with linear null space, inputs scaled to [0, 1], smoothing by GCV",
+    "pce<N>": "Sparse polynomial chaos expansion: Legendre degree N, LARS + corrected LOO selection",
+    "logistic-regression": "Binomial GLM with logit link on linear terms",
+    "poisson-regression": "Poisson GLM with log link on linear terms",
+    "gam": "Generalized additive model, one P-spline smooth per input, GCV",
+    "median": "Median (tau = 0.5) linear quantile regression",
     "<libraryForm>": "Any ModelLibrary form name (powerLaw, logistic, exponentialDecay, ...) as a nonlinear model",
 }
 
 _POLY = re.compile(r"^(?:(ridge|robust|lasso)-)?poly(\d+)$")
 _ORTHO = re.compile(r"^ortho(\d+)$")
+_PCE = re.compile(r"^pce(\d+)$")
 
 
 def expandShorthand(name: str) -> Optional[dict]:
@@ -59,6 +65,16 @@ def expandShorthand(name: str) -> Optional[dict]:
     if m:
         return {"type": "linearBasis", "basis": {"type": "orthogonalPolynomial", "degree": int(m.group(1))},
                 "solver": {"type": "ridge", "alpha": "gcv"}}
+    m = _PCE.match(name)
+    if m:
+        return {"type": "linearBasis", "basis": {"type": "orthogonalPolynomial", "degree": int(m.group(1))},
+                "solver": "lars"}
+    if name == "logistic-regression":
+        return {"type": "glm", "family": "binomial"}
+    if name == "poisson-regression":
+        return {"type": "glm", "family": "poisson"}
+    if name == "median":
+        return {"type": "quantile", "tau": 0.5}
     if name == "pspline":
         return {"type": "linearBasis", "basis": {"type": "bspline", "nSegments": 20, "degree": 3},
                 "solver": {"type": "ridge", "penalty": "smoothness", "alpha": "gcv"}}

@@ -1,7 +1,7 @@
 """Solvers for linear-in-parameter models."""
-from pythonLibs.regressionHandler.solvers.LinearSolvers import (ElasticNetSolver, LinearSolverBase,
+from pythonLibs.regressionHandler.solvers.LinearSolvers import (ElasticNetSolver, LarsSolver, LinearSolverBase,
                                                                 OrdinaryLeastSquares, RidgeSolver,
-                                                                RobustSolver, SolveResult, robustWeights)
+                                                                RobustSolver, SolveResult, larsOrder, robustWeights)
 
 __all__ = ["LinearSolverBase", "SolveResult", "OrdinaryLeastSquares", "RidgeSolver", "ElasticNetSolver",
-           "RobustSolver", "robustWeights"]
+           "RobustSolver", "robustWeights", "LarsSolver", "larsOrder"]

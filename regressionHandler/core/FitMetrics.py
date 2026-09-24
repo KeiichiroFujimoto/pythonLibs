@@ -48,6 +48,10 @@ class FitMetrics:
         y = np.asarray(y, dtype=float)
         yHat = np.asarray(yHat, dtype=float)
         n = y.size
+        if n == 0:                     # an output without observations (heterotopic multi-output data)
+            nan = float("nan")
+            return cls(nSamples=0, nParams=float(nParams), sse=nan, rmse=nan, mae=nan, maxAbsError=nan,
+                       rSquared=nan, adjRSquared=nan, logLikelihood=nan, aic=nan, aicc=nan, bic=nan)
         w = np.ones(n) if weights is None else np.asarray(weights, dtype=float)
         r = y - yHat
         sse = float(np.sum(w * r * r))

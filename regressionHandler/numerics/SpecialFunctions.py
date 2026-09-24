@@ -503,3 +503,49 @@ def besselK(nu: float, x):
 def gamma(x):
     """Gamma function for x > 0."""
     return np.exp(gammaln(x))
+
+
+# ---------------------------------------------------------------- polygamma
+_DIGAMMA_B = np.array([1.0 / 12, -1.0 / 120, 1.0 / 252, -1.0 / 240, 1.0 / 132, -691.0 / 32760, 1.0 / 12])
+
+
+def digamma(x):
+    """psi(x) = d/dx log Gamma(x) for x > 0 (recurrence to x >= 10, then the asymptotic series)."""
+    x = np.asarray(x, dtype=float)
+    scalar = x.ndim == 0
+    z = np.atleast_1d(x).copy()
+    if np.any(z <= 0):
+        raise ValueError("digamma is implemented for x > 0")
+    acc = np.zeros_like(z)
+    small = z < 10.0
+    while np.any(small):
+        acc[small] -= 1.0 / z[small]
+        z[small] += 1.0
+        small = z < 10.0
+    inv2 = 1.0 / (z * z)
+    series = inv2 * (_DIGAMMA_B[0] - inv2 * (-_DIGAMMA_B[1] - inv2 * (_DIGAMMA_B[2] - inv2 * (-_DIGAMMA_B[3]
+                     - inv2 * (_DIGAMMA_B[4] - inv2 * (-_DIGAMMA_B[5] - inv2 * _DIGAMMA_B[6]))))))
+    out = acc + np.log(z) - 0.5 / z - series
+    return float(out[0]) if scalar else out
+
+
+def trigamma(x):
+    """psi'(x) for x > 0 (recurrence to x >= 10, then the asymptotic series)."""
+    x = np.asarray(x, dtype=float)
+    scalar = x.ndim == 0
+    z = np.atleast_1d(x).copy()
+    if np.any(z <= 0):
+        raise ValueError("trigamma is implemented for x > 0")
+    acc = np.zeros_like(z)
+    small = z < 10.0
+    while np.any(small):
+        acc[small] += 1.0 / (z[small] * z[small])
+        z[small] += 1.0
+        small = z < 10.0
+    inv = 1.0 / z
+    inv2 = inv * inv
+    # 1/z + 1/(2z^2) + sum B_2k / z^(2k+1)
+    series = inv + 0.5 * inv2 + inv * inv2 * (1.0 / 6 - inv2 * (1.0 / 30 - inv2 * (1.0 / 42 - inv2 * (1.0 / 30
+                                                                                  - inv2 * 5.0 / 66))))
+    out = acc + series
+    return float(out[0]) if scalar else out

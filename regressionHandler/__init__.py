@@ -14,7 +14,7 @@ from pythonLibs.regressionHandler.evaluation import (ModelSelector, bootstrap, c
                                                     diagnose, modelReport, regressionMetrics, stepwiseSelect,
                                                     tuneHyperparameters)
 from pythonLibs.regressionHandler.sampling import PROBLEMS, getProblem, latinHypercube
-from pythonLibs.regressionHandler.models import (CokrigingModel, IdwModel, KplsModel, KrigingModel, LinearBasisModel,
+from pythonLibs.regressionHandler.models import (CokrigingModel, GamModel, GlmModel, QuantileModel, MultiFidelityKrigingModel, GradientKrigingModel, IdwModel, KplsModel, KrigingModel, LinearBasisModel,
                                                 LocalRegressionModel, NonlinearModel, RbfModel, ScalableKrigingModel,
                                                 SplineModel,
                                                 availableModels, createModel, registerForm)
@@ -22,7 +22,7 @@ from pythonLibs.regressionHandler.RegressionHandler import RegressionDataset, Re
 
 loadModel = SurrogateModelBase.load
 
-__all__ = ["RegressionHandler", "RegressionDataset", "SurrogateModelBase", "LinearBasisModel", "KrigingModel", "KplsModel", "CokrigingModel", "ScalableKrigingModel", "RbfModel", "IdwModel", "NonlinearModel", "SplineModel",
+__all__ = ["RegressionHandler", "RegressionDataset", "SurrogateModelBase", "LinearBasisModel", "KrigingModel", "KplsModel", "CokrigingModel", "ScalableKrigingModel", "GlmModel", "GamModel", "QuantileModel", "MultiFidelityKrigingModel", "GradientKrigingModel", "RbfModel", "IdwModel", "NonlinearModel", "SplineModel",
            "LocalRegressionModel", "registerForm", "createModel",
            "availableModels", "loadModel", "crossValidate", "regressionMetrics", "ModelSelector",
            "defaultCandidates", "stepwiseSelect", "tuneHyperparameters", "diagnose", "bootstrap", "modelReport",

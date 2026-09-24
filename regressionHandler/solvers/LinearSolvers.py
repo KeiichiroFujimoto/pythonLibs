@@ -345,3 +345,128 @@ class RobustSolver(LinearSolverBase):
                            conditionNumber=max(pt.conditionNumber for pt in parts), alpha=np.zeros(ny),
                            weights=effW, info={"iterations": iters, "robustScale": scales.tolist(),
                                                "outlierMask": outliers})
+
+
+def larsOrder(x: np.ndarray, y: np.ndarray, maxSteps: int) -> list[int]:
+    """Order in which columns enter the least-angle regression path (Efron et al. 2004).
+
+    x must be centred with unit-norm columns and y centred.
+    """
+    n, p = x.shape
+    active: list[int] = []
+    mu = np.zeros(n)
+    for _ in range(min(maxSteps, p, n - 1)):
+        c = x.T @ (y - mu)
+        inactive = np.array([j for j in range(p) if j not in active], dtype=int)
+        if inactive.size == 0:
+            break
+        if not active:
+            active.append(int(inactive[np.argmax(np.abs(c[inactive]))]))
+        cMax = float(np.max(np.abs(c[active])))
+        if cMax <= 1e-14 * max(1.0, float(np.linalg.norm(y))):
+            break
+        s = np.sign(c[active])
+        xa = x[:, active] * s
+        g = xa.T @ xa
+        try:
+            gi1 = np.linalg.solve(g, np.ones(len(active)))
+        except np.linalg.LinAlgError:
+            break
+        aa = 1.0 / np.sqrt(max(float(np.sum(gi1)), 1e-300))
+        u = xa @ (aa * gi1)
+        a = x.T @ u
+        inactive = np.array([j for j in range(p) if j not in active], dtype=int)
+        if inactive.size == 0:
+            break
+        with np.errstate(divide="ignore", invalid="ignore"):
+            g1 = (cMax - c[inactive]) / (aa - a[inactive])
+            g2 = (cMax + c[inactive]) / (aa + a[inactive])
+        cand = np.concatenate([g1, g2])
+        idx = np.concatenate([inactive, inactive])
+        ok = np.isfinite(cand) & (cand > 1e-14)
+        if not np.any(ok):
+            break
+        k = int(np.argmin(np.where(ok, cand, np.inf)))
+        mu = mu + cand[k] * u
+        active.append(int(idx[k]))
+    return active
+
+
+@registry("solver").register("lars")
+class LarsSolver(LinearSolverBase):
+    """Sparse least squares: LARS variable ordering + OLS refits, best subset by (corrected) LOO error.
+
+    The least-angle path fixes the order in which terms enter; each prefix of
+    that order is refitted by ordinary least squares (hybrid LARS) and scored
+    by its exact leave-one-out error, optionally with the small-sample
+    correction T = n / (n - k) (1 + tr((Phi^T Phi / n)^-1) / n) (Blatman &
+    Sudret 2011). The intercept is always kept. This is the standard way to
+    fit sparse polynomial chaos expansions with fewer samples than terms.
+    """
+
+    def _declareOptions(self, declare) -> None:
+        declare("maxTerms", None, types=int, lower=1, desc="Largest number of selected terms (default n - 2)")
+        declare("criterion", "looCorrected", values=("loo", "looCorrected"), desc="Model-size criterion")
+
+    def solve(self, phi, y, w, penalty, biasMask) -> SolveResult:
+        n, p = phi.shape
+        ny = y.shape[1]
+        sw = np.sqrt(w)
+        icpt = _splitIntercept(phi, biasMask)
+        cols = np.array([j for j in range(p) if j != icpt], dtype=int)
+        coef = np.zeros((p, ny))
+        cov = np.zeros((ny, p, p))
+        hat = np.zeros((n, ny))
+        edf, sse = np.zeros(ny), np.zeros(ny)
+        selected, paths = [], []
+        maxK = self.options["maxTerms"] or max(1, n - 2 - (icpt is not None))
+        for j in range(ny):
+            xw = phi[:, cols] * sw[:, None]
+            yw = y[:, j] * sw
+            if icpt is not None:
+                ones = sw / np.linalg.norm(sw)
+                xc = xw - np.outer(ones, ones @ xw)
+                yc = yw - ones * (ones @ yw)
+            else:
+                xc, yc = xw, yw
+            norms = np.linalg.norm(xc, axis=0)
+            usable = norms > 1e-12 * max(1.0, float(norms.max()) if norms.size else 1.0)
+            xs = np.where(usable, xc / np.where(usable, norms, 1.0), 0.0)
+            order = [int(cols[k]) for k in larsOrder(xs, yc, maxK) if usable[k]]
+            base = [icpt] if icpt is not None else []
+            best, bestScore, path, fits = None, np.inf, [], []
+            for k in range(0, len(order) + 1):
+                terms = base + order[:k]
+                if not terms or len(terms) >= n:
+                    continue
+                sol = leastSquaresSvd(phi[:, terms] * sw[:, None], yw)
+                if sol.rank < len(terms):
+                    continue
+                r = yw - (phi[:, terms] * sw[:, None]) @ sol.coef
+                h = np.sum(sol.u * sol.u, axis=1)
+                if np.any(h > 1.0 - 1e-10):
+                    continue
+                loo = float(np.mean((r / (1.0 - h)) ** 2))
+                if self.options["criterion"] == "looCorrected":
+                    gram = (phi[:, terms] * sw[:, None]).T @ (phi[:, terms] * sw[:, None]) / n
+                    corr = n / (n - len(terms)) * (1.0 + float(np.trace(np.linalg.pinv(gram))) / n)
+                    loo *= corr
+                path.append(loo)
+                fits.append((loo, (terms, sol, h, r)))
+            if not fits:
+                raise np.linalg.LinAlgError("LARS found no well-posed subset")
+            # smallest model whose score is within round-off of the best (exact fits tie at ~0)
+            bestScore = min(f[0] for f in fits)
+            tolScore = bestScore + 1e-10 * float(np.mean(yc * yc) + 1e-300)
+            terms, sol, h, r = next(f[1] for f in fits if f[0] <= tolScore)
+            coef[terms, j] = sol.coef
+            g = sol.inverseGram()
+            cov[j][np.ix_(terms, terms)] = g
+            hat[:, j] = h
+            edf[j] = len(terms)
+            sse[j] = float(r @ r)
+            selected.append(terms)
+            paths.append(path)
+        return SolveResult(coef=coef, covUnscaled=cov, hatDiag=hat, edf=edf, sse=sse, sigma2=_sigma2(sse, n, edf),
+                           rank=int(edf.max()), conditionNumber=float("nan"), alpha=np.zeros(ny),
+                           weights=np.repeat(w[:, None], ny, axis=1), info={"selected": selected, "looPath": paths})

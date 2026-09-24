@@ -7,10 +7,13 @@ from pythonLibs.regressionHandler.evaluation.ModelSelection import (ModelSelecto
                                                                     defaultCandidates, stepwiseSelect,
                                                                     tuneHyperparameters)
 from pythonLibs.regressionHandler.evaluation.Report import modelReport
+from pythonLibs.regressionHandler.evaluation.Sensitivity import (SobolResult, ishigamiSobol, monteCarloSobol, pceSobol,
+                                                                 sobolIndices)
 from pythonLibs.regressionHandler.evaluation.Variogram import (EmpiricalVariogram, VariogramFit, empiricalVariogram,
                                                               fitVariogram, variogramCloud)
 
 __all__ = ["CvResult", "crossValidate", "kFoldIndices", "regressionMetrics", "BootstrapResult", "bootstrap",
            "DiagnosticsReport", "diagnose", "ModelSelector", "SelectionResult", "StepwiseResult",
            "defaultCandidates", "stepwiseSelect", "tuneHyperparameters", "modelReport",
-           "EmpiricalVariogram", "VariogramFit", "empiricalVariogram", "fitVariogram", "variogramCloud"]
+           "EmpiricalVariogram", "VariogramFit", "empiricalVariogram", "fitVariogram", "variogramCloud",
+           "SobolResult", "sobolIndices", "pceSobol", "monteCarloSobol", "ishigamiSobol"]
