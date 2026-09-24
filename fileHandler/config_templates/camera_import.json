@@ -1,0 +1,24 @@
+{
+  "policy": "SMART",
+  "rename": {
+    "include_milliseconds": false,
+    "include_timezone": false,
+    "preserve_original_name": true
+  },
+  "index": {
+    "should_index": true
+  },
+  "priorities": {
+    "time": [
+      "exif",
+      "mtime"
+    ],
+    "author": [
+      "exif",
+      "filesystem"
+    ]
+  },
+  "custom_metadata": {
+    "source": "camera"
+  }
+}

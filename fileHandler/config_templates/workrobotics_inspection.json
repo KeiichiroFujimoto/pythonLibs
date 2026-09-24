@@ -1,0 +1,23 @@
+{
+  "policy": "PRESERVE",
+  "rename": {
+    "should_rename": false
+  },
+  "index": {
+    "should_index": true
+  },
+  "priorities": {
+    "time": [
+      "filename",
+      "exif",
+      "mtime"
+    ],
+    "author": [
+      "filesystem"
+    ]
+  },
+  "custom_metadata": {
+    "application": "WorkRobotics",
+    "type": "inspection"
+  }
+}

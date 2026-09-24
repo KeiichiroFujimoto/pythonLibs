@@ -1,0 +1,19 @@
+{
+  "policy": "MANUAL",
+  "rename": {
+    "should_rename": false
+  },
+  "index": {
+    "should_index": false
+  },
+  "priorities": {
+    "time": [
+      "filename",
+      "mtime"
+    ],
+    "author": [
+      "filesystem"
+    ]
+  },
+  "custom_metadata": {}
+}

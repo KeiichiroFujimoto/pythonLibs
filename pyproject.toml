@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pythonlibs-toolbase"
+version = "0.1.0"
+description = "Public-domain extraction of the pythonLibs toolBase automation layer."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Unlicense" }
+authors = [
+  { name = "Keiichiro Fujimoto" }
+]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2",
+  "openpyxl>=3.1",
+  "pint>=0.23",
+  "PyYAML>=6",
+  "toml>=0.10",
+  "lxml>=5",
+  "xmltodict>=0.13",
+  "dicttoxml>=1.7",
+  "dpath>=2",
+  "jsonpath-ng>=1.6",
+  "natsort>=8",
+]
+
+[project.optional-dependencies]
+config = [
+  "PyYAML>=6",
+  "toml>=0.10",
+]
+numeric = [
+  "numpy>=1.24",
+  "pandas>=2",
+  "openpyxl>=3.1",
+  "pint>=0.23",
+]
+rest = [
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  "pydantic>=2",
+]
+llm = [
+  "langchain>=0.2",
+  "pydantic>=2",
+]
+all = [
+  "PyYAML>=6",
+  "toml>=0.10",
+  "numpy>=1.24",
+  "pandas>=2",
+  "openpyxl>=3.1",
+  "pint>=0.23",
+  "lxml>=5",
+  "xmltodict>=0.13",
+  "dicttoxml>=1.7",
+  "dpath>=2",
+  "jsonpath-ng>=1.6",
+  "natsort>=8",
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  "langchain>=0.2",
+  "pydantic>=2",
+]
+
+[tool.setuptools]
+packages = [
+  "pythonLibs",
+  "pythonLibs.MethodHandler",
+  "pythonLibs.dataHandler",
+  "pythonLibs.dateTimeHandler",
+  "pythonLibs.dictHandler",
+  "pythonLibs.docstringHandler",
+  "pythonLibs.fileHandler",
+  "pythonLibs.jsonHandler",
+  "pythonLibs.os",
+  "pythonLibs.tableHandler",
+  "pythonLibs.tomlHandler",
+  "pythonLibs.tool",
+  "pythonLibs.xmlHandler",
+  "pythonLibs.yamlHandler",
+]
+
+[tool.setuptools.package-dir]
+pythonLibs = "."
+"pythonLibs.MethodHandler" = "MethodHandler"
+"pythonLibs.dataHandler" = "dataHandler"
+"pythonLibs.dateTimeHandler" = "dateTimeHandler"
+"pythonLibs.dictHandler" = "dictHandler"
+"pythonLibs.docstringHandler" = "docstringHandler"
+"pythonLibs.fileHandler" = "fileHandler"
+"pythonLibs.jsonHandler" = "jsonHandler"
+"pythonLibs.os" = "os"
+"pythonLibs.tableHandler" = "tableHandler"
+"pythonLibs.tomlHandler" = "tomlHandler"
+"pythonLibs.tool" = "tool"
+"pythonLibs.xmlHandler" = "xmlHandler"
+"pythonLibs.yamlHandler" = "yamlHandler"
+
+[tool.setuptools.package-data]
+"pythonLibs.fileHandler" = ["config_templates/*.json"]

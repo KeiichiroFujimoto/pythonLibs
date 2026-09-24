@@ -1,0 +1,27 @@
+{
+  "policy": "SMART",
+  "rename": {
+    "include_milliseconds": false,
+    "include_timezone": false,
+    "preserve_original_name": true
+  },
+  "index": {
+    "should_index": true
+  },
+  "priorities": {
+    "time": [
+      "exif",
+      "video",
+      "pdf",
+      "filename",
+      "mtime"
+    ],
+    "author": [
+      "exif",
+      "video",
+      "pdf",
+      "filesystem"
+    ]
+  },
+  "custom_metadata": {}
+}

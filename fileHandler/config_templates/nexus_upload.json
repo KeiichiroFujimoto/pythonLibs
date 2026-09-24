@@ -1,0 +1,26 @@
+{
+  "policy": "STRICT",
+  "rename": {
+    "include_milliseconds": true,
+    "include_timezone": false,
+    "preserve_original_name": true
+  },
+  "index": {
+    "should_index": true
+  },
+  "priorities": {
+    "time": [
+      "exif",
+      "filename",
+      "mtime"
+    ],
+    "author": [
+      "filesystem",
+      "exif"
+    ]
+  },
+  "custom_metadata": {
+    "application": "Nexus",
+    "version": "2.0"
+  }
+}
