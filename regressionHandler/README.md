@@ -249,11 +249,20 @@ Commands (category `regression`):
 
 | Area | Commands |
 |---|---|
-| Data | `setData`, `loadDataFromFile`, `listData`, `getDataSummary`, `deleteData`, `generateSamples`, `sampleBenchmark` |
-| Models | `listModelTypes`, `listLibraryForms`, `fitModel`, `listModels`, `getModelSummary`, `deleteModel`, `saveModel`, `loadModel` |
-| Prediction | `predict` (with `level` for intervals), `predictDerivatives` |
+| Data | `setData` (outputs may contain None for unobserved values), `loadDataFromFile`, `listData`, `getDataSummary`, `deleteData`, `generateSamples`, `sampleBenchmark` |
+| Models | `listModelTypes`, `listLibraryForms`, `fitModel`, `fitMultiFidelity`, `listModels`, `getModelSummary`, `inspectModel`, `deleteModel`, `saveModel`, `loadModel` |
+| Prediction | `predict` (with `level` for intervals), `predictDerivatives`, `predictCovariance`, `simulate`, `predictBlock`, `predictTerms` |
 | Selection | `autoFit`, `compareModels`, `tuneModel`, `stepwiseSelect`, `crossValidateModel` |
-| Quality | `diagnoseModel`, `bootstrapModel`, `exportReport` (Markdown + toolBase documentResponse) | The class auto-registers in `LabRegistry` as
+| Analysis | `sensitivityAnalysis` (Sobol), `empiricalVariogram`, `fitVariogram` (optionally straight into a Kriging model), `quantileProcess` |
+| Quality | `diagnoseModel`, `bootstrapModel`, `exportReport` (Markdown + toolBase documentResponse) |
+
+`getModelSummary` lists the model's `aspects`; `inspectModel(modelName, aspect, aspectOptions)`
+returns one of them (whitelisted), e.g. `glmSummary`, `gamSummary`, `termTable`,
+`spatialSummary`, `looDiagnostics`, `parameterIntervals` (`{"level": 0.9, "method": "profile"}`),
+`varianceComponents`, `randomEffects`, `evidence`, `featureImportance`, `outOfBag`,
+`coregionalization`, `residuals` (`{"kind": "pearson"}`).
+
+The class auto-registers in `LabRegistry` as
 `regression`.
 
 ## Tests

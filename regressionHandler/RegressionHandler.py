@@ -23,6 +23,8 @@ import copy
 import json
 from typing import Any, Optional
 
+import numpy as np
+
 from pythonLibs.tool.decorators import secure_expose
 from pythonLibs.tool.toolBaseSecured import toolBaseSecured
 
@@ -34,6 +36,8 @@ from pythonLibs.regressionHandler.evaluation.Diagnostics import diagnose
 from pythonLibs.regressionHandler.evaluation.ModelSelection import (ModelSelector, defaultCandidates, stepwiseSelect,
                                                                     tuneHyperparameters)
 from pythonLibs.regressionHandler.evaluation.Report import modelReport
+from pythonLibs.regressionHandler.evaluation.Sensitivity import sobolIndices
+from pythonLibs.regressionHandler.evaluation.Variogram import empiricalVariogram, fitVariogram
 from pythonLibs.regressionHandler.models.ModelFactory import availableModels, createModel
 from pythonLibs.regressionHandler.sampling.Problems import PROBLEMS, getProblem
 from pythonLibs.regressionHandler.sampling.Sampling import fullFactorial, latinHypercube, randomSampling, sobolLike
@@ -46,7 +50,9 @@ class RegressionDataset:
 
     def __init__(self, x, y, weights=None, featureNames=None, outputNames=None):
         self.x = asFeatureMatrix(x)
-        self.y = asOutputMatrix(y, self.x.shape[0])
+        # None / NaN mark unobserved outputs (cokriging, gradient-enhanced Kriging); models that need
+        # complete data reject them when fitting
+        self.y = asOutputMatrix(np.array(y, dtype=float), self.x.shape[0], allowMissing=True)
         self.weights = None if weights is None else asWeights(weights, self.x.shape[0])
         self.featureNames = list(featureNames) if featureNames else [f"x{i}" for i in range(self.x.shape[1])]
         self.outputNames = list(outputNames) if outputNames else [f"y{j}" for j in range(self.y.shape[1])]
@@ -55,8 +61,9 @@ class RegressionDataset:
 
     def summary(self) -> dict:
         def stats(a, names):
-            return [{"name": n, "min": float(a[:, i].min()), "max": float(a[:, i].max()),
-                     "mean": float(a[:, i].mean()), "std": float(a[:, i].std())} for i, n in enumerate(names)]
+            return [{"name": n, "min": float(np.nanmin(a[:, i])), "max": float(np.nanmax(a[:, i])),
+                     "mean": float(np.nanmean(a[:, i])), "std": float(np.nanstd(a[:, i])),
+                     "missing": int(np.sum(np.isnan(a[:, i])))} for i, n in enumerate(names)]
         return {"nSamples": int(self.x.shape[0]), "nInputs": int(self.x.shape[1]), "nOutputs": int(self.y.shape[1]),
                 "weighted": self.weights is not None, "inputs": stats(self.x, self.featureNames),
                 "outputs": stats(self.y, self.outputNames)}
@@ -102,9 +109,30 @@ class RegressionHandler(toolBaseSecured):
         "nBoot": "Number of bootstrap replicates",
         "includeNoise": "Bootstrap prediction (not confidence) bands",
         "nSamples": "Number of sample points",
-        "xlimits": "Input box [[lo, hi], ...]",
+        "xlimits": "Input box [[lo, hi], ...] (sensitivity analysis: box of the uniform inputs, default training range)",
         "problemName": "Benchmark problem: " + ", ".join(sorted(PROBLEMS)),
         "seed": "Random seed",
+        "aspect": "Model detail to return (see 'aspects' in getModelSummary), e.g. glmSummary, termTable, "
+                  "spatialSummary, looDiagnostics, parameterIntervals, varianceComponents, featureImportance",
+        "aspectOptions": "Keyword arguments of the aspect, e.g. {'level': 0.9, 'method': 'profile'}",
+        "blocks": "Regions: point lists [[x...], ...] or boxes {'lower': [...], 'upper': [...], 'n': k}",
+        "blockWeights": "Optional averaging weights per block (list of lists or None)",
+        "nPerDim": "Grid cells per input used to discretize box blocks",
+        "output": "Index of the output to analyse",
+        "variogramName": "Name under which an empirical variogram is stored",
+        "columns": "Input columns used as coordinates (default: all)",
+        "residualsOf": "Model whose residuals are analysed instead of the raw output (removes a trend)",
+        "nBins": "Number of distance bins",
+        "maxDistance": "Largest lag distance",
+        "binEdges": "Explicit bin edges (overrides nBins / maxDistance)",
+        "estimator": "Variogram estimator: 'classical' or 'robust'",
+        "tolerance": "Angular tolerance in degrees of a directional variogram",
+        "distance": "'euclidean' or 'greatCircle' (longitude, latitude in degrees)",
+        "variogramModel": "exponential, gaussian, spherical, cubic, matern or wendland",
+        "nu": "Matern smoothness",
+        "fitWeights": "Variogram fitting weights: 'cressie', 'counts' or 'equal'",
+        "taus": "Quantile levels, e.g. [0.1, 0.5, 0.9]",
+        "dataNames": "Datasets of increasing fidelity (lowest first), all with the same inputs",
     }
 
     def __init__(self, variablesDict=None, caseName=None, *, secure_enabled: bool = False,
@@ -115,6 +143,7 @@ class RegressionHandler(toolBaseSecured):
         self._models: dict = {}
         self._modelData: dict = {}
         self._selections: dict = {}
+        self._variograms: dict = {}
         super().__init__(instance_subcls=None, variablesDict=variablesDict, caseName=caseName,
                          secure_enabled=secure_enabled, auth_handler=auth_handler, token=token,
                          exposure_mode=exposure_mode, workdir_root=workdir_root)
@@ -394,6 +423,147 @@ class RegressionHandler(toolBaseSecured):
         return self.setData(x=x, y=y, dataName=dataName or problemName,
                             featureNames=[f"x{i}" for i in range(prob.nx)], outputNames=[problemName])
 
+    # ------------------------------------------------------------------ model details and joint predictions
+    _ASPECTS = ("hyperparameters", "spatialSummary", "looDiagnostics", "looResiduals", "replicates",
+                "parameterIntervals", "glmSummary", "gamSummary", "termTable", "residuals", "varianceComponents",
+                "randomEffects", "evidence", "featureImportance", "outOfBag", "trainingHistory", "coregionalization",
+                "varianceParameters", "transformParameter", "inputCorrections", "pseudoR2", "objective",
+                "coefficients", "leverage", "parameters")
+    _ASPECT_KWARGS = {"parameterIntervals": {"level", "method", "nGrid"}, "residuals": {"kind"}}
+
+    @classmethod
+    def _aspectsOf(cls, m) -> list:
+        return [a for a in cls._ASPECTS if hasattr(type(m), a)]
+
+    @secure_expose(alias="inspectModel", category=_CATEGORY)
+    def inspectModel(self, modelName: str, aspect: str, aspectOptions: Optional[dict] = None) -> dict:
+        """Model-specific details (GLM / GAM tables, spatial summary, LOO, intervals, importance, ...)."""
+        m = self.getModel(modelName)
+        if aspect not in self._aspectsOf(m):
+            raise ValueError(f"aspect {aspect!r} is not available for {m.registryName}; "
+                             f"available: {self._aspectsOf(m)}")
+        attr = getattr(type(m), aspect)
+        opts = dict(aspectOptions or {})
+        if isinstance(attr, property):
+            if opts:
+                raise ValueError(f"{aspect} takes no options")
+            value = getattr(m, aspect)
+        else:
+            unknown = set(opts) - self._ASPECT_KWARGS.get(aspect, set())
+            if unknown:
+                raise ValueError(f"unsupported options for {aspect}: {sorted(unknown)}")
+            value = getattr(m, aspect)(**opts)
+        return toJsonable({"modelName": modelName, "aspect": aspect, "value": value})
+
+    @secure_expose(alias="predictCovariance", category=_CATEGORY)
+    def predictCovariance(self, modelName: str, x: list, kind: str = "confidence") -> dict:
+        """Joint posterior covariance of the predictions at x, one (m, m) matrix per output."""
+        m = self.getModel(modelName)
+        return toJsonable({"modelName": modelName, "outputNames": m.outputNames, "kind": kind,
+                           "mean": m.predictValues(x), "covariance": m.predictCovariance(x, kind)})
+
+    @secure_expose(alias="simulate", category=_CATEGORY)
+    def simulate(self, modelName: str, x: list, nSamples: int = 1, seed: int = 0, kind: str = "confidence") -> dict:
+        """Conditional simulation: nSamples joint draws (nSamples, m, ny) from the posterior at x."""
+        m = self.getModel(modelName)
+        return toJsonable({"modelName": modelName, "outputNames": m.outputNames,
+                           "samples": m.simulate(x, nSamples, seed, kind)})
+
+    @secure_expose(alias="predictBlock", category=_CATEGORY)
+    def predictBlock(self, modelName: str, blocks: list, blockWeights: Optional[list] = None,
+                     nPerDim: int = 8) -> dict:
+        """Mean and variance of block averages (block Kriging for models with a joint covariance)."""
+        m = self.getModel(modelName)
+        res = m.predictBlock(blocks, blockWeights, nPerDim)
+        return toJsonable({"modelName": modelName, "outputNames": m.outputNames, "mean": res["mean"],
+                           "variance": res["variance"], "nPoints": [len(p) for p in res["points"]]})
+
+    @secure_expose(alias="predictTerms", category=_CATEGORY)
+    def predictTerms(self, modelName: str, x: list) -> dict:
+        """Centred partial effects (and standard errors) of every term of an additive model."""
+        m = self.getModel(modelName)
+        if not hasattr(m, "predictTerms"):
+            raise ValueError(f"{m.registryName} has no additive terms")
+        return toJsonable({"modelName": modelName, "terms": m.predictTerms(x)})
+
+    # ------------------------------------------------------------------ analyses
+    @secure_expose(alias="sensitivityAnalysis", category=_CATEGORY)
+    def sensitivityAnalysis(self, modelName: str, method: str = "auto", xlimits: Optional[list] = None,
+                            nSamples: int = 4096, seed: int = 0, output: int = 0, nBoot: int = 200) -> dict:
+        """Sobol indices (exact for polynomial chaos models, Monte Carlo otherwise) of one output."""
+        m = self.getModel(modelName)
+        res = sobolIndices(m, xlimits=xlimits, method=method, nSamples=nSamples, seed=seed, output=output,
+                           nBoot=nBoot)
+        return toJsonable({"modelName": modelName, "output": m.outputNames[output], **res.toDict(),
+                           "summary": res.summary()})
+
+    @secure_expose(alias="empiricalVariogram", category=_CATEGORY)
+    def empiricalVariogram(self, dataName: str = "default", output: int = 0, columns: Optional[list] = None,
+                           residualsOf: Optional[str] = None, nBins: int = 15, maxDistance: Optional[float] = None,
+                           binEdges: Optional[list] = None, estimator: str = "classical",
+                           direction: Optional[Any] = None, tolerance: float = 22.5, distance: str = "euclidean",
+                           variogramName: Optional[str] = None) -> dict:
+        """Binned empirical semivariogram of an output (or of a model's residuals)."""
+        ds = self.getDataset(dataName)
+        coords = ds.x if columns is None else ds.x[:, [int(c) for c in columns]]
+        z = ds.y[:, output]
+        if residualsOf:
+            z = z - self.getModel(residualsOf).predictValues(ds.x)[:, output]
+        ok = np.isfinite(z)
+        ev = empiricalVariogram(coords[ok], z[ok], nBins=nBins, maxDistance=maxDistance, binEdges=binEdges,
+                                estimator=estimator, direction=direction, tolerance=tolerance, distance=distance)
+        if variogramName:
+            self._variograms[variogramName] = {"variogram": ev, "dataName": dataName, "columns": columns,
+                                               "output": output}
+        return toJsonable({"variogramName": variogramName, **ev.toDict()})
+
+    @secure_expose(alias="fitVariogram", category=_CATEGORY)
+    def fitVariogram(self, variogramName: str, variogramModel: str = "exponential", nu: float = 0.5,
+                     fitWeights: str = "cressie", nugget: Optional[float] = None, fitNu: bool = False,
+                     modelName: Optional[str] = None) -> dict:
+        """Fit a variogram model; with modelName also fit a Kriging model with the fitted covariance."""
+        try:
+            stored = self._variograms[variogramName]
+        except KeyError:
+            raise KeyError(f"unknown variogram {variogramName!r}; available: {sorted(self._variograms)}") from None
+        fit = fitVariogram(stored["variogram"], variogramModel, nu=nu, weights=fitWeights, nugget=nugget, fitNu=fitNu)
+        out = {"variogramName": variogramName, **fit.toDict(), "practicalRange": fit.practicalRange()}
+        if modelName:
+            opts = fit.krigingOptions()
+            cols = stored["columns"]
+            if cols is not None:
+                opts["spatialColumns"] = [int(c) for c in cols]
+            out["kriging"] = self.fitModel(modelName, {"type": "kriging", "poly": "constant", **opts},
+                                           stored["dataName"])
+        else:
+            out["krigingOptions"] = fit.krigingOptions() if variogramModel != "cubic" else None
+        return toJsonable(out)
+
+    @secure_expose(alias="quantileProcess", category=_CATEGORY)
+    def quantileProcess(self, taus: list, dataName: str = "default", basis: Optional[dict] = None,
+                        output: int = 0) -> dict:
+        """Quantile-regression coefficients beta(tau) for several levels (exact solutions)."""
+        from pythonLibs.regressionHandler.models.QuantileModel import quantileProcess
+        ds = self.getDataset(dataName)
+        res = quantileProcess(ds.x, ds.y[:, output], taus, basis=basis, weights=ds.weights)
+        return toJsonable({"dataName": dataName, "output": ds.outputNames[output], **res})
+
+    @secure_expose(alias="fitMultiFidelity", category=_CATEGORY)
+    def fitMultiFidelity(self, modelName: str, dataNames: list, options: Optional[dict] = None,
+                         output: int = 0) -> dict:
+        """Recursive multi-fidelity Kriging from datasets of increasing fidelity (lowest first)."""
+        from pythonLibs.regressionHandler.models.MultiFidelityKrigingModel import MultiFidelityKrigingModel
+        sets = [self.getDataset(d) for d in dataNames]
+        if len({s.x.shape[1] for s in sets}) != 1:
+            raise ValueError("all fidelity levels need the same inputs")
+        m = MultiFidelityKrigingModel(**(options or {}))
+        m.fitLevels([s.x for s in sets], [s.y[:, output] for s in sets])
+        self._models[modelName] = m
+        self._modelData[modelName] = None
+        report = self._modelReport(modelName)
+        report["levels"] = list(dataNames)
+        return report
+
     # ------------------------------------------------------------------ reporting
     @secure_expose(alias="exportReport", category=_CATEGORY)
     def exportReport(self, modelName: str, filePath: Optional[str] = None, crossValidation: bool = True,
@@ -428,6 +598,7 @@ class RegressionHandler(toolBaseSecured):
             "dataName": self._modelData.get(modelName), "nInputs": m.nx, "nOutputs": m.ny,
             "featureNames": m.featureNames, "outputNames": m.outputNames,
             "supports": dict(m.supports),
+            "aspects": self._aspectsOf(m),
             "metrics": {name: mm.toDict() for name, mm in zip(m.outputNames, m.metrics)},
             "summary": m.summary(),
         }
