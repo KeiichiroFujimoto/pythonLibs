@@ -10,7 +10,7 @@ Levenberg-Marquardt. Memory and time are O(n nx) per evaluation, so large n
 is fine. A straight line f = a + b x with sx / sy fixed is Deming regression
 (sx = sy: orthogonal / total least squares).
 
-Standard errors follow the ODRPACK convention: the Gauss-Newton information
+Standard errors follow the usual ODR convention: the Gauss-Newton information
 of beta with the corrections eliminated (effective-variance weights) scaled
 by s^2 = SS / (n - p), SS the minimized weighted sum of squares.
 
