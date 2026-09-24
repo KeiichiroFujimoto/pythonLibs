@@ -8,6 +8,7 @@ from pythonLibs.regressionHandler import (BayesianLinearModel, GradientBoostingM
                                           RandomForestModel, ShapeSplineModel, TransformedTargetModel)
 from pythonLibs.regressionHandler.bases.BSplineBasis import differenceMatrix
 from pythonLibs.regressionHandler.models.NeuralNetworkModel import _Net
+from pythonLibs.regressionHandler.models.QuantileModel import QuantileModel as QuantileModelCls
 from pythonLibs.regressionHandler.models.ShapeConstrainedModels import constrainedLeastSquares, nnls, pava
 from pythonLibs.regressionHandler.models.TransformedTargetModel import (boxCox, boxCoxInverse, yeoJohnson,
                                                                        yeoJohnsonInverse)
@@ -273,3 +274,58 @@ def test_bayesianRidgeFixedPointAndPosterior():
     assert beta == pytest.approx((80 - np.sum(gamma)) / np.sum((y - phi @ post) ** 2), rel=1e-5)
     ard = BayesianLinearModel(prior="ard").fit(x, y)
     assert "x2" not in ard.evidence["activeTerms"] and {"x0", "x1", "x3"} <= set(ard.evidence["activeTerms"])
+
+
+# ---------------------------------------------------------------- persistence encoding, vertices, forests
+def test_compactEncodingIsLosslessAndSmaller():
+    import json
+    from pythonLibs.regressionHandler.core.Serialization import compactArrays, expandArrays
+    rng = np.random.default_rng(14)
+    data = {"f": rng.standard_normal(500).tolist(), "i": list(range(300)), "m": rng.standard_normal((40, 7)).tolist(),
+            "n": [None if k % 7 == 0 else float(k) / 3 for k in range(200)], "s": ["a", "b"], "small": [1.5, 2.5],
+            "nested": [{"v": rng.standard_normal(100).tolist()}]}
+    enc = compactArrays(data)
+    assert enc["small"] == [1.5, 2.5] and enc["s"] == ["a", "b"]
+    assert expandArrays(json.loads(json.dumps(enc))) == data
+    assert len(json.dumps(enc)) < 0.7 * len(json.dumps(data))
+    x = rng.uniform(0, 1, (300, 2))
+    y = x[:, 0] + np.sin(5 * x[:, 1])
+    m = RandomForestModel(nTrees=10).fit(x, y)
+    from pythonLibs.regressionHandler import SurrogateModelBase
+    for compact in (False, True):
+        d = json.loads(json.dumps(m.toDict(compact=compact)))
+        np.testing.assert_array_equal(SurrogateModelBase.fromDict(d).predict(x), m.predict(x))
+
+
+def test_quantileSolutionIsAVertex():
+    rng = np.random.default_rng(15)
+    x = rng.uniform(0, 1, (400, 3))
+    y = x @ [1.0, -2.0, 0.5] + rng.standard_t(3, 400)
+    m = QuantileModelCls(tau=0.35, se="none").fit(x, y)
+    r = y - m.predict(x).ravel()
+    assert np.sum(np.abs(r) < 1e-10) == 4                      # p = 4 interpolated observations
+
+
+def test_forestBatchEqualsSingleTrees():
+    from pythonLibs.regressionHandler.numerics.Trees import buildForestLevelwise
+    rng = np.random.default_rng(16)
+    x = rng.uniform(0, 1, (200, 3))
+    # integer responses keep every gradient sum exact, so tie-breaking cannot depend on rounding
+    # (with real-valued data, near-tied splits may resolve differently between batch and single builds)
+    y = rng.integers(-5, 6, 200).astype(float) + np.round(3 * x[:, 0])
+    b = FeatureBinner(255).fit(x)
+    c = b.transform(x)
+    sets = [rng.integers(0, 200, 200) for _ in range(4)]
+    forest = buildForestLevelwise(c, b, -y, np.ones(200), sets, minSamplesLeaf=3)
+    for rows, tree in zip(sets, forest):
+        single = buildTreeLevelwise(c, b, -y, np.ones(200), rows, minSamplesLeaf=3)
+        np.testing.assert_array_equal(tree.feature, single.feature)
+        np.testing.assert_allclose(tree.predict(x), single.predict(x), rtol=0, atol=0)
+
+
+def test_bsplineRangeExtension():
+    from pythonLibs.regressionHandler.bases.BSplineBasis import BSplineBasis
+    x = np.linspace(2.0, 4.0, 30)[:, None]
+    b = BSplineBasis(nSegments=5, rangeExtension=0.01).fit(x)
+    assert b._lo[0] == pytest.approx(1.98) and b._hi[0] == pytest.approx(4.02)
+    np.testing.assert_allclose(b.transform(x).sum(axis=1), 1.0, atol=1e-12)     # partition of unity

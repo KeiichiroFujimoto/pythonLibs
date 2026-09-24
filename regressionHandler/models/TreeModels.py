@@ -21,13 +21,14 @@ References:
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import numpy as np
 
 from pythonLibs.regressionHandler.core.Registry import registry
 from pythonLibs.regressionHandler.core.SurrogateModelBase import SurrogateModelBase
-from pythonLibs.regressionHandler.numerics.Trees import FeatureBinner, Tree, buildTree, buildTreeLevelwise
+from pythonLibs.regressionHandler.numerics.Trees import FeatureBinner, Tree, buildForestLevelwise, buildTree
 
 
 def _nFeatures(spec, nx: int) -> Optional[int]:
@@ -60,6 +61,40 @@ class _TreeEnsemble(SurrogateModelBase):
     def _effectiveParams(self):
         return float(np.mean([np.sum(t.feature < 0) for t in self._trees]))
 
+    def _packTrees(self) -> dict:
+        """All trees as concatenated arrays + offsets (compact persistence)."""
+        ts = self._trees
+        cat = lambda name: np.concatenate([getattr(t, name) for t in ts]) if ts else np.zeros(0)
+        feat, thr = cat("feature").astype(np.int64), cat("threshold")
+        # thresholds are bin edges: store the bin code (small integers) instead of the float
+        code = np.full(feat.size, -1, dtype=np.int64)
+        for j, e in enumerate(self._binner.edges):
+            sel = feat == j
+            code[sel] = np.searchsorted(e, thr[sel])
+        return {"offsets": np.cumsum([0] + [t.feature.size for t in ts]).tolist(),
+                "feature": feat.astype(np.int32).tolist(), "thresholdBin": code.astype(np.int32).tolist(),
+                "left": cat("left").astype(np.int32).tolist(), "right": cat("right").astype(np.int32).tolist(),
+                "value": cat("value").tolist(),
+                "gain": cat("gain").astype(np.float32).astype(float).tolist(),
+                "cover": cat("cover").astype(np.float32).astype(float).tolist()}
+
+    def _unpackTrees(self, state: dict) -> list:
+        if "trees" in state:                                   # older layout: one dict per tree
+            return [Tree.fromDict(t) for t in state["trees"]]
+        p = state["forest"]
+        off = p["offsets"]
+        arr = {k: np.asarray(p[k]) for k in ("feature", "left", "right", "value", "gain", "cover")}
+        code = np.asarray(p["thresholdBin"], dtype=np.int64)
+        thr = np.zeros(code.size)
+        for j, e in enumerate(self._binner.edges):
+            sel = arr["feature"] == j
+            thr[sel] = e[code[sel]]
+        arr["threshold"] = thr
+        return [Tree(feature=arr["feature"][a:b].astype(np.int64), threshold=arr["threshold"][a:b].astype(float),
+                     left=arr["left"][a:b].astype(np.int64), right=arr["right"][a:b].astype(np.int64),
+                     value=arr["value"][a:b].astype(float), gain=arr["gain"][a:b].astype(float),
+                     cover=arr["cover"][a:b].astype(float)) for a, b in zip(off[:-1], off[1:])]
+
 
 @registry("model").register("randomForest")
 class RandomForestModel(_TreeEnsemble):
@@ -73,9 +108,9 @@ class RandomForestModel(_TreeEnsemble):
         d("minSamplesLeaf", 5, types=int, lower=1, desc="Minimum samples per leaf")
         d("maxDepth", None, types=int, lower=1, desc="Maximum depth (None: unlimited)")
         d("bootstrap", True, types=bool, desc="Bootstrap rows per tree")
-        d("maxBins", 64, types=int, lower=2, upper=256,
-          desc="Histogram bins per feature (64: ~3x faster than 255 at equal accuracy for deep trees)")
+        d("maxBins", 255, types=int, lower=2, upper=256, desc="Histogram bins per feature")
         d("seed", 0, types=int, desc="Random seed")
+        d("nJobs", 1, types=int, lower=1, desc="Threads building trees (numpy-bound; >1 helps only with large n)")
         self.supports.update(multiOutput=False, variances=True, weights=False)
 
     def _train(self) -> None:
@@ -83,16 +118,29 @@ class RandomForestModel(_TreeEnsemble):
         n = y.size
         self._binner = FeatureBinner(self.options["maxBins"]).fit(x)
         codes = self._binner.transform(x)
-        rng = np.random.default_rng(self.options["seed"])
         mf = _nFeatures(self.options["maxFeatures"], self.nx)
         g, h = -y, np.ones(n)
-        self._trees, inbag = [], np.zeros((self.options["nTrees"], n), dtype=np.int32)
-        for b in range(self.options["nTrees"]):
-            rows = rng.integers(0, n, n) if self.options["bootstrap"] else np.arange(n)
-            inbag[b] = np.bincount(rows, minlength=n)
-            self._trees.append(buildTreeLevelwise(codes, self._binner, g, h, rows, self.options["maxDepth"],
-                                                  self.options["minSamplesLeaf"], 0.0, mf, rng))
-        self._inbag = inbag
+        nTrees = self.options["nTrees"]
+        rngRows = np.random.default_rng(self.options["seed"])
+        rowSets = [rngRows.integers(0, n, n) if self.options["bootstrap"] else np.arange(n) for _ in range(nTrees)]
+        # grow trees in batches (all trees of a batch share every level's numpy calls)
+        batch = max(1, min(nTrees, 4_000_000 // max(n * self.nx, 1)))
+        groups = [list(range(s, min(nTrees, s + batch))) for s in range(0, nTrees, batch)]
+
+        def grow(group):
+            rng = np.random.default_rng([self.options["seed"], group[0]])     # independent of thread order
+            return buildForestLevelwise(codes, self._binner, g, h, [rowSets[b] for b in group],
+                                        self.options["maxDepth"], self.options["minSamplesLeaf"], 0.0, mf, rng)
+
+        jobs = self.options["nJobs"]
+        if jobs > 1 and len(groups) > 1:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                parts = list(pool.map(grow, groups))
+        else:
+            parts = [grow(gr) for gr in groups]
+        self._trees = [t for part in parts for t in part]
+        self._inbag = np.array([np.bincount(r, minlength=n) for r in rowSets], dtype=np.int32)
+        inbag = self._inbag
         preds = np.array([t.predict(x) for t in self._trees])            # (B, n)
         oob = inbag == 0
         cnt = oob.sum(axis=0)
@@ -132,13 +180,13 @@ class RandomForestModel(_TreeEnsemble):
         return {"predictions": self._oob, "mse": self._oobMse, "rSquared": self._oobR2}
 
     def _stateToDict(self) -> dict:
-        return {"binner": self._binner.toDict(), "trees": [t.toDict() for t in self._trees],
+        return {"binner": self._binner.toDict(), "forest": self._packTrees(),
                 "inbag": self._inbag.tolist(), "oob": [None if not np.isfinite(v) else float(v) for v in self._oob],
                 "oobMse": self._oobMse, "oobR2": self._oobR2}
 
     def _stateFromDict(self, state: dict) -> None:
         self._binner = FeatureBinner.fromDict(state["binner"])
-        self._trees = [Tree.fromDict(t) for t in state["trees"]]
+        self._trees = self._unpackTrees(state)
         self._inbag = np.array(state["inbag"], dtype=np.int32)
         self._oob = np.array([np.nan if v is None else v for v in state["oob"]], dtype=float)
         self._oobMse, self._oobR2 = float(state["oobMse"]), float(state["oobR2"])
@@ -302,12 +350,12 @@ class GradientBoostingModel(_TreeEnsemble):
         return {"loss": list(self._history), "nTrees": len(self._trees), "validationSize": self._nVal}
 
     def _stateToDict(self) -> dict:
-        return {"binner": self._binner.toDict(), "trees": [t.toDict() for t in self._trees], "f0": self._f0,
+        return {"binner": self._binner.toDict(), "forest": self._packTrees(), "f0": self._f0,
                 "history": self._history, "nVal": self._nVal}
 
     def _stateFromDict(self, state: dict) -> None:
         self._binner = FeatureBinner.fromDict(state["binner"])
-        self._trees = [Tree.fromDict(t) for t in state["trees"]]
+        self._trees = self._unpackTrees(state)
         self._f0 = float(state["f0"])
         self._history = list(state["history"])
         self._nVal = int(state["nVal"])

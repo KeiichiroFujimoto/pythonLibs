@@ -225,30 +225,55 @@ def buildTreeLevelwise(codes: np.ndarray, binner: FeatureBinner, g: np.ndarray, 
                        rows: Optional[np.ndarray] = None, maxDepth: Optional[int] = None, minSamplesLeaf: int = 1,
                        lam: float = 0.0, maxFeatures: Optional[int] = None,
                        rng: Optional[np.random.Generator] = None, maxCells: int = 8_000_000) -> Tree:
+    """One depth-wise tree (see ``buildForestLevelwise``)."""
+    rows = np.arange(codes.shape[0]) if rows is None else np.asarray(rows)
+    return buildForestLevelwise(codes, binner, g, h, [rows], maxDepth, minSamplesLeaf, lam, maxFeatures, rng,
+                                maxCells)[0]
+
+
+def buildForestLevelwise(codes: np.ndarray, binner: FeatureBinner, g: np.ndarray, h: np.ndarray,
+                         rowSets: list, maxDepth: Optional[int] = None, minSamplesLeaf: int = 1,
+                         lam: float = 0.0, maxFeatures: Optional[int] = None,
+                         rng: Optional[np.random.Generator] = None, maxCells: int = 8_000_000) -> list:
     """Depth-wise growth with all nodes of a level processed together.
 
-    One ``bincount`` per level builds the (node, feature, bin) histograms of
-    every open node, and the split search is vectorized over nodes, so deep
-    trees (random forests) cost a few dozen numpy calls instead of one per node.
-    ``rows`` may contain repeats (bootstrap multiplicities).
+    Several trees (one per entry of ``rowSets``, e.g. bootstrap samples) grow
+    together: node ids run across trees, so every level of the whole forest
+    costs a few numpy calls. Shallow levels use one ``bincount`` for the
+    (node, feature, bin) histograms of every open node; deep levels (few
+    samples per node) search exact splits on sorted (node, code) segments.
+    Row sets may repeat rows (bootstrap multiplicities).
     """
     n, nf = codes.shape
-    rows = np.arange(n) if rows is None else np.asarray(rows)
+    nTrees = len(rowSets)
+    rows = np.concatenate([np.asarray(r) for r in rowSets])
     rng = rng or np.random.default_rng(0)
     nb = int(binner.nBins.max())
     validBin = np.zeros((nf, nb - 1), dtype=bool)
     for j, e in enumerate(binner.edges):
         validBin[j, :e.size] = True
+    edgeTable = np.full((nf, nb), np.nan)
+    for j, e in enumerate(binner.edges):
+        edgeTable[j, :e.size] = e
     maxDepth = maxDepth if maxDepth is not None else 64
     gs, hs = g[rows], h[rows]
     cs = codes[rows].astype(np.int64)
-    node = np.zeros(rows.size, dtype=np.int64)            # node id of every sample occurrence
-    feature, threshold, left, right, value, gainArr, cover = [-1], [0.0], [-1], [-1], [0.0], [0.0], [0.0]
-    open_ = np.array([0])
+    cap = 2 * rows.size + nTrees
+    feature = np.full(cap, -1, dtype=np.int64)
+    treeOf = np.zeros(cap, dtype=np.int64)
+    treeOf[:nTrees] = np.arange(nTrees)
+    threshold = np.zeros(cap)
+    left = np.full(cap, -1, dtype=np.int64)
+    right = np.full(cap, -1, dtype=np.int64)
+    value = np.zeros(cap)
+    gainArr = np.zeros(cap)
+    cover = np.zeros(cap)
+    nNodes = nTrees
+    node = np.repeat(np.arange(nTrees), [len(r) for r in rowSets])   # node id of every sample occurrence
+    open_ = np.arange(nTrees)
     depth = 0
-    while open_.size and depth <= maxDepth:
-        # local index of each open node; samples in closed nodes are dropped
-        local = np.full(len(feature), -1, dtype=np.int64)
+    while open_.size:
+        local = np.full(nNodes, -1, dtype=np.int64)
         local[open_] = np.arange(open_.size)
         ln = local[node]
         act = ln >= 0
@@ -257,66 +282,131 @@ def buildTreeLevelwise(codes: np.ndarray, binner: FeatureBinner, g: np.ndarray, 
         gTot = np.bincount(ln, weights=gs, minlength=k)
         hTot = np.bincount(ln, weights=hs, minlength=k)
         cTot = np.bincount(ln, minlength=k).astype(float)
-        for i, nd in enumerate(open_):
-            value[nd] = -gTot[i] / (hTot[i] + lam) if hTot[i] + lam > 0 else 0.0
-            cover[nd] = hTot[i]
-        if depth == maxDepth:
+        denom = hTot + lam
+        value[open_] = np.where(denom > 0, -gTot / np.where(denom > 0, denom, 1.0), 0.0)
+        cover[open_] = hTot
+        if depth >= maxDepth:
             break
         bestGain = np.full(k, -np.inf)
         bestF = np.zeros(k, dtype=np.int64)
         bestB = np.zeros(k, dtype=np.int64)
-        chunk = max(1, maxCells // (nf * nb))
-        for c0 in range(0, k, chunk):
-            c1 = min(k, c0 + chunk)
-            sel = (ln >= c0) & (ln < c1)
-            idx = (((ln[sel] - c0)[:, None] * nf + np.arange(nf)[None, :]) * nb + cs[sel]).ravel()
-            size = (c1 - c0) * nf * nb
-            gg = np.bincount(idx, weights=np.repeat(gs[sel], nf), minlength=size).reshape(c1 - c0, nf, nb)
-            hh = np.bincount(idx, weights=np.repeat(hs[sel], nf), minlength=size).reshape(c1 - c0, nf, nb)
-            cc = np.bincount(idx, minlength=size).reshape(c1 - c0, nf, nb).astype(float)
-            gl, hl, cl = np.cumsum(gg, 2)[:, :, :-1], np.cumsum(hh, 2)[:, :, :-1], np.cumsum(cc, 2)[:, :, :-1]
-            G, H, C = gTot[c0:c1, None, None], hTot[c0:c1, None, None], cTot[c0:c1, None, None]
-            gr, hr, cr = G - gl, H - hl, C - cl
-            ok = (cl >= minSamplesLeaf) & (cr >= minSamplesLeaf) & (hl > 0) & (hr > 0) & validBin[None]
-            if maxFeatures is not None and maxFeatures < nf:
-                keys = rng.random((c1 - c0, nf))
-                thresh = np.sort(keys, axis=1)[:, maxFeatures - 1:maxFeatures]
-                ok &= (keys <= thresh)[:, :, None]
-            with np.errstate(divide="ignore", invalid="ignore"):
-                gain = gl ** 2 / (hl + lam) + gr ** 2 / (hr + lam) - G ** 2 / (H + lam)
-            gain = np.where(ok, gain, -np.inf).reshape(c1 - c0, -1)
-            arg = np.argmax(gain, axis=1)
-            bestGain[c0:c1] = gain[np.arange(c1 - c0), arg]
-            bestF[c0:c1], bestB[c0:c1] = np.divmod(arg, nb - 1)
-        split = np.isfinite(bestGain) & (bestGain > 1e-12 * np.maximum(np.abs(gTot) ** 2 / np.maximum(hTot, 1e-300),
-                                                                       1e-300))
+        featMask = None
+        if maxFeatures is not None and maxFeatures < nf:
+            keys = rng.random((k, nf))
+            featMask = keys <= np.sort(keys, axis=1)[:, maxFeatures - 1:maxFeatures]
+        if ln.size < 2 * nb * k:                 # < 2 nb samples per node: exact sorted search is cheaper
+            _sortedSplits(cs, gs, hs, ln, k, gTot, hTot, cTot, minSamplesLeaf, lam, featMask, bestGain, bestF, bestB)
+        else:
+            chunk = max(1, maxCells // (nf * nb))
+            for c0 in range(0, k, chunk):
+                c1 = min(k, c0 + chunk)
+                sel = (ln >= c0) & (ln < c1)
+                idx = (((ln[sel] - c0)[:, None] * nf + np.arange(nf)[None, :]) * nb + cs[sel]).ravel()
+                size = (c1 - c0) * nf * nb
+                gg = np.bincount(idx, weights=np.repeat(gs[sel], nf), minlength=size).reshape(c1 - c0, nf, nb)
+                hh = np.bincount(idx, weights=np.repeat(hs[sel], nf), minlength=size).reshape(c1 - c0, nf, nb)
+                cc = np.bincount(idx, minlength=size).reshape(c1 - c0, nf, nb).astype(float)
+                gl, hl, cl = np.cumsum(gg, 2)[:, :, :-1], np.cumsum(hh, 2)[:, :, :-1], np.cumsum(cc, 2)[:, :, :-1]
+                G, H, C = gTot[c0:c1, None, None], hTot[c0:c1, None, None], cTot[c0:c1, None, None]
+                gr, hr, cr = G - gl, H - hl, C - cl
+                ok = (cl >= minSamplesLeaf) & (cr >= minSamplesLeaf) & (hl > 0) & (hr > 0) & validBin[None]
+                if featMask is not None:
+                    ok &= featMask[c0:c1, :, None]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    gain = gl ** 2 / (hl + lam) + gr ** 2 / (hr + lam) - G ** 2 / (H + lam)
+                gain = np.where(ok, gain, -np.inf).reshape(c1 - c0, -1)
+                arg = np.argmax(gain, axis=1)
+                bestGain[c0:c1] = gain[np.arange(c1 - c0), arg]
+                bestF[c0:c1], bestB[c0:c1] = np.divmod(arg, nb - 1)
+        scale = np.maximum(gTot ** 2 / np.maximum(hTot, 1e-300), 1e-300)
+        split = np.isfinite(bestGain) & (bestGain > 1e-12 * scale)
         if not np.any(split):
             break
+        parents = open_[split]
+        ns = parents.size
+        kids = nNodes + np.arange(2 * ns).reshape(ns, 2)
+        nNodes += 2 * ns
+        feature[parents] = bestF[split]
+        threshold[parents] = edgeTable[bestF[split], bestB[split]]
+        gainArr[parents] = bestGain[split]
+        left[parents], right[parents] = kids[:, 0], kids[:, 1]
+        treeOf[kids[:, 0]] = treeOf[parents]
+        treeOf[kids[:, 1]] = treeOf[parents]
         childOf = np.full((k, 2), -1, dtype=np.int64)
-        for i in np.flatnonzero(split):
-            nd = open_[i]
-            feature[nd], threshold[nd] = int(bestF[i]), binner.threshold(int(bestF[i]), int(bestB[i]))
-            gainArr[nd] = float(bestGain[i])
-            for side in range(2):
-                feature.append(-1)
-                threshold.append(0.0)
-                left.append(-1)
-                right.append(-1)
-                value.append(0.0)
-                gainArr.append(0.0)
-                cover.append(0.0)
-                childOf[i, side] = len(feature) - 1
-            left[nd], right[nd] = int(childOf[i, 0]), int(childOf[i, 1])
+        childOf[split] = kids
         movers = split[ln]
-        f = bestF[ln[movers]]
-        goLeft = cs[movers, :][np.arange(f.size), f] <= bestB[ln[movers]]
-        node[movers] = np.where(goLeft, childOf[ln[movers], 0], childOf[ln[movers], 1])
-        node[~movers] = -1                                   # samples in new leaves leave the frontier
+        lm = ln[movers]
+        goLeft = cs[movers, bestF[lm]] <= bestB[lm]
+        node = np.where(movers, 0, -1)
+        node[movers] = np.where(goLeft, childOf[lm, 0], childOf[lm, 1])
         keep = node >= 0
         cs, gs, hs, node = cs[keep], gs[keep], hs[keep], node[keep]
-        open_ = childOf[split].ravel()
+        open_ = kids.ravel()
         depth += 1
-    return Tree(feature=np.array(feature, dtype=np.int64), threshold=np.array(threshold, dtype=float),
-                left=np.array(left, dtype=np.int64), right=np.array(right, dtype=np.int64),
-                value=np.array(value, dtype=float), gain=np.array(gainArr, dtype=float),
-                cover=np.array(cover, dtype=float))
+    # split the flat forest into trees with local node ids: a stable sort by tree keeps each tree's ids
+    # ascending, so its root (the smallest id) comes first and children stay after their parents
+    owner = treeOf[:nNodes]
+    order = np.argsort(owner, kind="stable")
+    bounds = np.searchsorted(owner[order], np.arange(nTrees + 1))
+    local = np.empty(nNodes, dtype=np.int64)
+    local[order] = np.arange(nNodes) - bounds[owner[order]]
+    lf, rt = left[:nNodes], right[:nNodes]
+    lfLocal = np.where(lf >= 0, local[np.maximum(lf, 0)], -1)
+    rtLocal = np.where(rt >= 0, local[np.maximum(rt, 0)], -1)
+    trees = []
+    for b in range(nTrees):
+        ids = order[bounds[b]:bounds[b + 1]]
+        trees.append(Tree(feature=feature[ids].copy(), threshold=threshold[ids].copy(), left=lfLocal[ids],
+                          right=rtLocal[ids], value=value[ids].copy(), gain=gainArr[ids].copy(),
+                          cover=cover[ids].copy()))
+    return trees
+
+def _sortedSplits(cs, gs, hs, ln, k, gTot, hTot, cTot, minSamplesLeaf, lam, featMask, bestGain, bestF, bestB):
+    """Best split of every node by sorting its samples per feature (exact, O(N log N) per feature).
+
+    Only samples of nodes that consider feature f (``featMask``) are sorted; the
+    (node, code) order comes from one integer key.
+    """
+    nf = cs.shape[1]
+    nb = int(cs.max()) + 2 if cs.size else 2
+    for f in range(nf):
+        if featMask is not None:
+            use = featMask[ln, f]
+            if not np.any(use):
+                continue
+            lnF, codeF, gF, hF = ln[use], cs[use, f], gs[use], hs[use]
+        else:
+            lnF, codeF, gF, hF = ln, cs[:, f], gs, hs
+        order = np.argsort(lnF * nb + codeF, kind="stable")     # stable: results independent of batching
+        node, c = lnF[order], codeF[order]
+        g, h = gF[order], hF[order]
+        cg, ch = np.cumsum(g), np.cumsum(h)
+        m = node.size
+        newSeg = np.r_[True, node[1:] != node[:-1]]
+        segStart = np.flatnonzero(newSeg)
+        segId = np.cumsum(newSeg) - 1
+        startPos = segStart[segId]
+        base = np.r_[0.0, cg][startPos]
+        baseH = np.r_[0.0, ch][startPos]
+        gl, hl = cg - base, ch - baseH
+        cl = np.arange(m) - startPos + 1.0
+        nxt = np.r_[~newSeg[1:], False] & np.r_[c[1:] > c[:-1], False]
+        G, H, C = gTot[node], hTot[node], cTot[node]
+        gr, hr, cr = G - gl, H - hl, C - cl
+        ok = nxt & (cl >= minSamplesLeaf) & (cr >= minSamplesLeaf) & (hl > 0) & (hr > 0)
+        if not np.any(ok):
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            gain = np.where(ok, gl ** 2 / (hl + lam) + gr ** 2 / (hr + lam) - G ** 2 / (H + lam), -np.inf)
+        segMax = np.maximum.reduceat(gain, segStart)
+        hit = gain == segMax[segId]
+        hit &= np.isfinite(gain)
+        pos = np.flatnonzero(hit)
+        firstOfSeg = np.r_[True, segId[pos][1:] != segId[pos][:-1]]
+        pos = pos[firstOfSeg]
+        nd = node[pos]
+        better = gain[pos] > bestGain[nd]
+        tgt = nd[better]
+        bestGain[tgt] = gain[pos][better]
+        bestF[tgt] = f
+        bestB[tgt] = c[pos][better]

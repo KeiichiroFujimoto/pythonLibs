@@ -8,11 +8,13 @@ The problem is solved exactly as the linear program (dual form)
 
 by a primal-dual interior-point method with Mehrotra predictor-corrector
 steps (Frisch-Newton; Portnoy & Koenker 1997); beta is minus the equality
-multiplier. Each iteration solves one p x p system, so n = 10^5 is fast.
+multiplier, finally moved to the exact vertex (the p interpolated points)
+as a simplex method would return. Each iteration solves one p x p system,
+so n = 10^5 is fast.
 
 Standard errors (``se``):
     "nid"        Hendricks-Koenker local sparsity from fits at tau +/- h (default)
-    "iid"        Koenker-Bassett, sparsity from residual quantiles (Siddiqui)
+    "iid"        Koenker-Bassett, sparsity from the ranked residuals nearest zero
     "ker"        Powell kernel sandwich
     "bootstrap"  xy-pair bootstrap
 with the Hall-Sheather bandwidth h.
@@ -108,7 +110,18 @@ def quantileFit(x: np.ndarray, y: np.ndarray, tau: float, weights: Optional[np.n
         primalObj = float(c @ xv)
         if gap < tol * (1.0 + abs(primalObj)):
             break
-    return -lam, {"iterations": it, "gap": gap, "dual": xv}
+    beta = -lam
+    # crossover to the exact vertex: the p observations the solution interpolates
+    r = y - x @ beta
+    basis = np.argsort(np.abs(r))[:p]
+    try:
+        vertex = np.linalg.solve(x[basis], y[basis])
+        loss = lambda b: float(np.sum(w * checkLoss(y - x @ b, tau)))
+        if loss(vertex) <= loss(beta) * (1.0 + 1e-12) + 1e-12:
+            beta = vertex
+    except np.linalg.LinAlgError:
+        pass
+    return beta, {"iterations": it, "gap": gap, "dual": xv}
 
 
 def checkLoss(r: np.ndarray, tau: float) -> np.ndarray:
@@ -174,9 +187,15 @@ class QuantileModel(SurrogateModelBase):
                     continue
             return np.cov(np.array(draws).T).reshape(p, p)
         if method == "iid":
-            lo, hi = max(tau - h, 1e-6), min(tau + h, 1 - 1e-6)
-            sparsity = (np.quantile(resid, hi) - np.quantile(resid, lo)) / (hi - lo)
-            return sparsity ** 2 * tau * (1.0 - tau) * np.linalg.inv(xtx)
+            # sparsity 1/f(0): median-regression slope of the residuals closest to zero on their ranks
+            eps = np.finfo(float).eps ** (2.0 / 3.0)
+            pz = int(np.sum(np.abs(resid) < eps))                        # interpolated points
+            hh = max(p + 1, int(np.ceil(n * h)))
+            ir = np.arange(pz + 1, min(hh + pz + 1, n) + 1)
+            ordResid = np.sort(resid[np.argsort(np.abs(resid), kind="stable")][ir - 1])
+            xt = ir / (n - p)
+            slope = quantileFit(np.column_stack([np.ones(ir.size), xt]), ordResid, 0.5)[0][1]
+            return slope ** 2 * tau * (1.0 - tau) * np.linalg.inv(xtx)
         if method == "ker":
             qlo, qhi = _sf.ndtri(np.array([max(tau - h, 1e-6), min(tau + h, 1 - 1e-6)]))
             iqr = np.quantile(resid, 0.75) - np.quantile(resid, 0.25)

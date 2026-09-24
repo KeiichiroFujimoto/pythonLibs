@@ -12,7 +12,9 @@ Design principles:
   first-class outputs next to the mean prediction
 - parameter inference (estimates, standard errors, t, p, confidence
   intervals, `summary()`) and cross-validation built in
-- JSON persistence (no pickle), silent by default
+- JSON persistence (no pickle), silent by default; large numeric arrays are
+  embedded as exact, zlib-compressed binary blocks (``save(compact=True)``,
+  the default), plain lists with ``compact=False``
 
 ## Layout
 
@@ -56,7 +58,7 @@ band = model.predictInterval(xNew, level=0.95, kind="prediction")
 grad = model.predictGradient(xNew)                          # (m, nx, ny)
 print(model.summary())                                      # R2, AICc, BIC + coefficient table
 cv = crossValidate(model, x, y, nFolds=10)                  # or method="analytic" for exact LOO
-model.save("model.json"); same = loadModel("model.json")
+model.save("model.json"); same = loadModel("model.json")     # large arrays stored as compressed binary blocks
 ```
 
 Building blocks compose freely:
@@ -102,7 +104,7 @@ type name (`glm`, `gam`, `quantile`, `randomForest`, ...).
 | `gek` | gradient-enhanced Kriging | N-D | yes | values and (partial) gradients as observations |
 | `shapeSpline` | shape-constrained P-spline | 1-D | no | exactly monotone and / or convex |
 | `isotonic` | isotonic regression | 1-D | no | pool-adjacent-violators |
-| `randomForest` | random forest | N-D | yes (infinitesimal jackknife) | out-of-bag error, feature importance |
+| `randomForest` | random forest | N-D | yes (infinitesimal jackknife) | out-of-bag error, feature importance; all trees grown level by level together |
 | `gradientBoosting` | gradient-boosted trees | N-D | no | squared / absolute / huber / quantile loss, early stopping |
 | `neuralNetwork` | multilayer perceptron | N-D | yes (deep ensemble) | L-BFGS or Adam, exact input gradients, multi-output |
 

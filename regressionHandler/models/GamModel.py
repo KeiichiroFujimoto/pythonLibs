@@ -89,7 +89,8 @@ class _SplineTerm(_Term):
     def _basis(self) -> BSplineBasis:
         seg = self.spec.get("nSegments", 10 if self.kind == "s" else 6)
         return BSplineBasis(nSegments=seg, degree=int(self.spec.get("degree", 3)),
-                            penaltyOrder=int(self.spec.get("penaltyOrder", 2)))
+                            penaltyOrder=int(self.spec.get("penaltyOrder", 2)),
+                            rangeExtension=float(self.spec.get("rangeExtension", 0.0)))
 
     def fit(self, x):
         cols = self.columns()
@@ -213,7 +214,8 @@ class GamModel(GlmModel):
         d("method", "auto", values=("auto", "gcv", "ubre"), desc="Smoothing-parameter criterion")
         d("lambdas", None, types=list, desc="Fixed smoothing parameters (None entries are estimated)")
         d("gamma", 1.0, types=(int, float), lower=1.0, desc="GCV / UBRE edf inflation (1.4 gives smoother fits)")
-        d("logLambdaBounds", [-12.0, 12.0], types=list, desc="Search bounds of log smoothing parameters")
+        d("logLambdaBounds", [-15.0, 25.0], types=list,
+          desc="Search bounds of log smoothing parameters (the upper end reaches the null-space fit)")
 
     def _validateOptions(self) -> None:
         self._makeFamily()

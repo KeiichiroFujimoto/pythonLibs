@@ -31,6 +31,7 @@ from typing import ClassVar, Optional
 import numpy as np
 
 from pythonLibs.regressionHandler.core.FitMetrics import FitMetrics
+from pythonLibs.regressionHandler.core.Serialization import compactArrays, expandArrays
 from pythonLibs.regressionHandler.core.FitResult import FitResult
 from pythonLibs.regressionHandler.core.InputValidation import asFeatureMatrix, asOutputMatrix, asWeights
 from pythonLibs.regressionHandler.core.OptionsDictionary import OptionsDictionary
@@ -379,7 +380,15 @@ class SurrogateModelBase(ABC):
         return f"<{self.describe()} ({'trained' if self._trained else 'untrained'})>"
 
     # ------------------------------------------------------------------ persistence
-    def toDict(self, includeTrainingData: bool = True) -> dict:
+    def toDict(self, includeTrainingData: bool = True, compact: bool = False) -> dict:
+        """JSON-compatible dictionary; ``compact`` encodes large numeric arrays (exact, smaller, faster)."""
+        d = self._toDictPlain(includeTrainingData)
+        if compact:
+            d = compactArrays(d)
+            d["encoding"] = "compact"
+        return d
+
+    def _toDictPlain(self, includeTrainingData: bool = True) -> dict:
         d = {"format": "regressionHandler.model", "version": FORMAT_VERSION, "type": self.registryName,
              "options": _optionsToDict(self.options.toDict())}
         if self._trained:
@@ -388,7 +397,7 @@ class SurrogateModelBase(ABC):
                      "xRange": self._xRange.tolist(),
                      "result": self.result.toDict() if self.result is not None else None}
             if self._subModels is not None:
-                state["subModels"] = [m.toDict(includeTrainingData) for m in self._subModels]
+                state["subModels"] = [m._toDictPlain(includeTrainingData) for m in self._subModels]
             else:
                 state["model"] = self._stateToDict()
             if includeTrainingData:
@@ -398,6 +407,8 @@ class SurrogateModelBase(ABC):
 
     @classmethod
     def fromDict(cls, d: dict) -> "SurrogateModelBase":
+        if d.get("encoding") == "compact":
+            d = expandArrays(d)
         modelCls = registry("model").get(d["type"]) if cls is SurrogateModelBase else cls
         model = modelCls(**_optionsFromDict(d.get("options", {})))
         state = d.get("state")
@@ -419,9 +430,10 @@ class SurrogateModelBase(ABC):
             model._trained = True
         return model
 
-    def save(self, filePath: str, includeTrainingData: bool = True) -> None:
+    def save(self, filePath: str, includeTrainingData: bool = True, compact: bool = True) -> None:
+        """Write JSON; ``compact`` (default) stores large arrays as compressed binary blocks inside it."""
         with open(filePath, "w", encoding="utf-8") as f:
-            json.dump(self.toDict(includeTrainingData), f)
+            json.dump(self.toDict(includeTrainingData, compact), f)
 
     @staticmethod
     def load(filePath: str) -> "SurrogateModelBase":

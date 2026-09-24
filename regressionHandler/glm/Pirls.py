@@ -203,7 +203,23 @@ def selectSmoothing(x, y, w, family: Family, penalties: list[np.ndarray], criter
         grid = np.linspace(lo, hi, 13)
         vals = np.array([score(np.full(len(free), g)) for g in grid])
         start = np.full(len(free), grid[int(np.argmin(vals))])
-        res = minimize(score, start, bounds=[(lo, hi)] * len(free), maxIter=200, tol=1e-8)
-        logL = res.x
+        res = minimize(score, start, bounds=[(lo, hi)] * len(free), maxIter=200, tol=1e-10)
+        logL = res.x.copy()
+        best = score(logL)
+        # polish: the criterion is often flat in some log lambda (terms heading to their null space);
+        # coordinate-wise Brent searches settle those directions precisely
+        for _ in range(4):
+            before = best
+            for i in range(len(free)):
+                def along(t, i=i):
+                    trial = logL.copy()
+                    trial[i] = t
+                    return score(trial)
+                a, b = max(lo, logL[i] - 3.0), min(hi, logL[i] + 3.0)
+                r = minimizeScalar(along, (a, b), xatol=1e-6)
+                if r.fun < best:
+                    logL[i], best = float(r.x[0]), float(r.fun)
+            if before - best <= 1e-12 * abs(before):
+                break
     final = fitAt(logL)
     return lambdas(logL), final, smoothingCriterion(final, family, n, criterion, gamma)

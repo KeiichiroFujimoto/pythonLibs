@@ -85,6 +85,8 @@ class BSplineBasis(BasisBase):
         declare("degree", 3, types=int, lower=0, upper=5, desc="Spline degree (3 = cubic)")
         declare("penaltyOrder", 2, types=int, lower=0, upper=4, desc="Difference order of the roughness penalty")
         declare("maxInputs", 3, types=int, lower=1, desc="Refuse more inputs than this (tensor size grows as p^nx)")
+        declare("rangeExtension", 0.0, types=(int, float), lower=0.0,
+                desc="Fraction of the data range added below the minimum and above the maximum")
 
     def _fit(self, x: np.ndarray) -> None:
         if self.nx > self.options["maxInputs"]:
@@ -93,8 +95,10 @@ class BSplineBasis(BasisBase):
         self._nSeg = [int(s) for s in seg] if isinstance(seg, list) else [int(seg)] * self.nx
         if len(self._nSeg) != self.nx:
             raise ValueError("nSegments list length must equal the number of inputs")
-        self._lo = x.min(axis=0)
-        hi = x.max(axis=0)
+        lo, hi = x.min(axis=0), x.max(axis=0)
+        ext = float(self.options["rangeExtension"]) * (hi - lo)
+        self._lo = lo - ext
+        hi = hi + ext
         self._hi = np.where(hi > self._lo, hi, self._lo + 1.0)
 
     @property
