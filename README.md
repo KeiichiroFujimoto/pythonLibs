@@ -31,12 +31,18 @@ os
 dataHandler
 tableHandler
 regressionHandler
+fieldMapping
 SchemaVersions.py
 ```
 
 `regressionHandler` adds regression / surrogate modelling (1D to N-D,
 self-implemented numerics on numpy) as a toolBaseSecured service; see
 [regressionHandler/README.md](regressionHandler/README.md).
+
+`fieldMapping` transfers fields between non-matching meshes while conserving
+their integrals (VTU with arbitrary polyhedra, finite-element integration,
+conservative sign-preserving surface flux transfer); see
+[fieldMapping/README.md](fieldMapping/README.md).
 
 Domain packages such as aerospace, world models, CAD, agents, and application
 services are intentionally not included.

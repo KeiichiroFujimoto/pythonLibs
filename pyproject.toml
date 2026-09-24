@@ -86,6 +86,11 @@ packages = [
   "pythonLibs.regressionHandler.evaluation",
   "pythonLibs.regressionHandler.sampling",
   "pythonLibs.regressionHandler.solvers",
+  "pythonLibs.regressionHandler.glm",
+  "pythonLibs.regressionHandler.constraints",
+  "pythonLibs.fieldMapping",
+  "pythonLibs.fieldMapping.io",
+  "pythonLibs.fieldMapping.mesh",
   "pythonLibs.tableHandler",
   "pythonLibs.tomlHandler",
   "pythonLibs.tool",
@@ -112,6 +117,11 @@ pythonLibs = "."
 "pythonLibs.regressionHandler.evaluation" = "regressionHandler/evaluation"
 "pythonLibs.regressionHandler.sampling" = "regressionHandler/sampling"
 "pythonLibs.regressionHandler.solvers" = "regressionHandler/solvers"
+"pythonLibs.regressionHandler.glm" = "regressionHandler/glm"
+"pythonLibs.regressionHandler.constraints" = "regressionHandler/constraints"
+"pythonLibs.fieldMapping" = "fieldMapping"
+"pythonLibs.fieldMapping.io" = "fieldMapping/io"
+"pythonLibs.fieldMapping.mesh" = "fieldMapping/mesh"
 "pythonLibs.tableHandler" = "tableHandler"
 "pythonLibs.tomlHandler" = "tomlHandler"
 "pythonLibs.tool" = "tool"

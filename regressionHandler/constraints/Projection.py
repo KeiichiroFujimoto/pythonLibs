@@ -9,7 +9,7 @@ is x(lambda) = clip(x0 - W^-1 C^T lambda, lb, ub) and only the m multipliers
 are unknown: the piecewise-linear equations C x(lambda) = d are solved by a
 semismooth Newton method with the generalized Jacobian
 -C diag(free / w) C^T and a backtracking line search. Without bounds this is
-one exact step. Cost per iteration: O(nnz(C) + m^3), so fields with millions
+one exact step. Cost per iteration: O(nnz(C) + m^3), so arrays with millions
 of values and a few thousand constraints are cheap.
 
 Nonlinear conservation laws g(x) = d (e.g. energy with temperature-dependent
