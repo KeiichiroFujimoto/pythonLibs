@@ -33,7 +33,7 @@ from __future__ import annotations
 import numpy as np
 
 from pythonLibs.regressionHandler.core.Registry import registry
-from pythonLibs.regressionHandler.models.KrigingModel import KrigingModel
+from pythonLibs.regressionHandler.models.KrigingModel import KrigingModel, fullLogLikelihood
 from pythonLibs.regressionHandler.numerics.NeighborSearch import NeighborSearch, _bruteForce
 from pythonLibs.regressionHandler.numerics.Optimizers import minimize, multiStart
 from pythonLibs.regressionHandler.sampling.Sampling import latinHypercube
@@ -332,13 +332,21 @@ class ScalableKrigingModel(KrigingModel):
         self._params = p
         self._kp, self._eta = self._split(p)
         nll, self._beta, self._sigma2 = self._profile(p)
-        self._logLik = -nll
+        n, q = self._xs.shape[0], self._f.shape[1]
+        self._logLik = fullLogLikelihood(nll, n - q if self.options["likelihood"] == "reml" else n, self._yStd)
         self._search = NeighborSearch(self._metricCoords(self._xs, self._kp)) \
             if self.options["approximation"] == "vecchia" else None
         self._fitc = self._fitcParts(p) if self.options["approximation"] == "fitc" else None
+        q = self._f.shape[1]
         if self._fitc is not None:
             resid = self._ys - self._f @ self._beta
             self._fitcAlpha = self._fitcSolve(self._fitc, resid)
+            gram = self._f.T @ self._fitcSolve(self._fitc, self._f) if q else np.zeros((0, 0))
+        else:
+            ft = self._vecchiaTerms(p)[1]
+            gram = ft.T @ ft
+        # (F^T C^-1 F)^-1: covariance of the GLS trend coefficients / sigma2 (universal-Kriging variance term)
+        self._aInv = np.linalg.pinv(gram) if q else np.zeros((0, 0))
 
     # ------------------------------------------------------------------ prediction
     def _predictParts(self, x: np.ndarray):
@@ -357,6 +365,11 @@ class ScalableKrigingModel(KrigingModel):
             w = np.linalg.solve(li, vx)
             var = np.diag(k.matrix(xs[:1, self._sc], xs[:1, self._sc], kp))[0] - np.sum(vx * vx, axis=0) \
                 + np.sum(w * w, axis=0)
+            if self._f.shape[1]:
+                # trend uncertainty: u = f(x) - F^T C^-1 Q_nx, var += u^T (F^T C^-1 F)^-1 u
+                qnx = v.T @ vx
+                u = self._trendMatrix(xs) - (self._fitcSolve(self._fitc, qnx)).T @ self._f
+                var = var + np.einsum("bq,qr,br->b", u, self._aInv, u)
             return mean, np.maximum(var, 0.0)
         m = min(self.options["predictionNeighbors"] or 3 * self.options["neighbors"], self._xs.shape[0])
         _, nb = self._search.query(self._metricCoords(xs, kp), m)
@@ -374,6 +387,10 @@ class ScalableKrigingModel(KrigingModel):
             b = np.linalg.solve(a, cv[:, :, None])[:, :, 0]
             mean[s:e] = np.sum(b * resid[nb[s:e]], axis=1)
             var[s:e] = c[:, m, m] - np.sum(cv * b, axis=1)
+            if self._f.shape[1]:
+                # trend uncertainty: u = f(x) - F_nb^T b, var += u^T (F^T C^-1 F)^-1 u
+                u = self._trendMatrix(xs[s:e]) - np.einsum("bm,bmq->bq", b, self._f[nb[s:e]])
+                var[s:e] += np.einsum("bq,qr,br->b", u, self._aInv, u)
         return trend + mean, np.maximum(var, 0.0)
 
     def _predictValues(self, x: np.ndarray) -> np.ndarray:

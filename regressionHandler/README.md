@@ -147,6 +147,9 @@ profile likelihoods, parameter intervals and conditional simulation.
 sp = KrigingModel(corr={"type": "matern", "nu": 1.0, "parameterization": "range", "ard": False},
                   poly="linear", normalize=False, likelihood="ml").fit(x, y)
 sp.spatialSummary()                            # lambda, tau, sigma2, range, effectiveDof, gcv, logLikelihood, ...
+# hyperparameters["logLikelihood"] is the maximized (REML: restricted) log-likelihood on the output scale;
+# a shared lengthscale / range over inputs of different spread is reported per input;
+# constant or collinear trend columns are dropped from the trend automatically
 sp.parameterIntervals(method="profile")        # or "hessian"
 sp.predictCovariance(xNew)                     # (ny, m, m) joint posterior covariance
 sp.simulate(xNew, nSamples=100, seed=1)        # conditional simulation, (nSamples, m, ny)
@@ -156,6 +159,8 @@ KrigingModel(corr={"type": "matern", "nu": "estimate"})                   # smoo
 KrigingModel(corr={"type": "wendland", "k": 2, "lengthscale0": 2.0})     # compact support
 KrigingModel(corr={"type": "matern52", "distance": "anisotropic"})       # full geometric anisotropy
 KrigingModel(corr={"type": "matern", "nu": 1.5, "distance": "greatCircle", "radiusUnit": "km"})
+# great-circle children of composite kernels also receive raw longitude / latitude (degrees):
+# {"type": "product", "kernels": [{"type": "matern52", "distance": "greatCircle"}, "matern52"], "columns": [[0, 1], [2]]}
 KrigingModel(spatialColumns=[0, 1], poly="linear")      # other columns enter the trend as covariates
 createModel("tps").fit(x, y)                            # thin-plate spline, smoothing by GCV
 ```

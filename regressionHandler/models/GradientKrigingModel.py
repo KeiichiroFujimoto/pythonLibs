@@ -63,6 +63,8 @@ class GradientKrigingModel(SurrogateModelBase):
                              "(squaredExponential, matern52, matern with nu > 1)")
         if k.options.get("distance", "scaled") != "scaled":
             raise ValueError("GEK supports the scaled (ARD / isotropic) distance only")
+        if k.registryName == "matern" and not isinstance(k.options["nu"], str) and k.options["nu"] <= 1.0:
+            raise ValueError("GEK needs a Matern smoothness nu > 1 (the process must be differentiable)")
 
     # ------------------------------------------------------------------ setup
     def _prepare(self) -> None:
@@ -87,7 +89,13 @@ class GradientKrigingModel(SurrogateModelBase):
         obs = np.isfinite(ys)
         self._pi, self._type = np.nonzero(obs)
         self._yObs = ys[self._pi, self._type]
-        self._kernel = buildKernel(self.options["corr"]).setup(nx)
+        kernel = buildKernel(self.options["corr"])
+        if kernel.registryName == "matern" and kernel.options["nu"] == "estimate":
+            # keep an estimated smoothness in the differentiable range nu > 1
+            lo, hi = kernel.options["nuBounds"]
+            kernel.options["nuBounds"] = [max(float(lo), 1.05), max(float(hi), 1.1)]
+            kernel.options["nu0"] = min(max(float(kernel.options["nu0"]), 1.5), kernel.options["nuBounds"][1])
+        self._kernel = kernel.setup(nx)
         deg = _TREND_DEGREE[self.options["poly"]]
         self._poly = PolynomialBasis(degree=deg).fit(self._xs) if deg >= 0 else None
         self._F = self._trendRows(self._xs[self._pi], self._type)
@@ -178,6 +186,9 @@ class GradientKrigingModel(SurrogateModelBase):
         fixed = self.options["hyperparameters"]
         if fixed is not None:
             p = np.asarray(fixed, dtype=float)
+            if p.size != self._kernel.nParams():
+                raise ValueError(f"hyperparameters needs {self._kernel.nParams()} values "
+                                 f"({', '.join(self._kernel.paramNames())})")
             self._optResult = None
         else:
             bounds = self._kernel.bounds()

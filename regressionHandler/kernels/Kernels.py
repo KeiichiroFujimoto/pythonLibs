@@ -66,6 +66,14 @@ class KernelBase(ComponentBase):
         self.nx = nx
         return self
 
+    def greatCircleColumns(self) -> list[int]:
+        """Input columns (of this kernel's inputs) read as longitude / latitude; known before ``setup``."""
+        return []
+
+    def adapt(self, x: np.ndarray) -> "KernelBase":
+        """Data-dependent preparation from the (model-scaled) training inputs, called before ``setup``."""
+        return self
+
     def lengthscaleIndices(self) -> list[int]:
         """Indices of log-lengthscale parameters (tied together for the tied-lengthscale start)."""
         return list(range(self.nParams()))
@@ -73,6 +81,14 @@ class KernelBase(ComponentBase):
     def lengthscaleColumns(self) -> list[int]:
         """Input column (of this kernel's inputs) scaling each entry of ``lengthscaleIndices``."""
         return [0] * len(self.lengthscaleIndices())
+
+    def lengthscaleColumnSets(self) -> list[list[int]]:
+        """All input columns each entry of ``lengthscaleIndices`` acts on (several for a tied lengthscale)."""
+        return [[c] for c in self.lengthscaleColumns()]
+
+    def _rejectPls(self, plsWeights) -> None:
+        if plsWeights is not None:
+            raise ValueError(f"{self.registryName} does not support PLS-reduced lengthscales (plsComponents)")
 
     def nParams(self) -> int:
         raise NotImplementedError
@@ -143,8 +159,10 @@ class StationaryKernel(KernelBase):
     def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
         self.nx = nx
         self._pls = None if plsWeights is None else np.asarray(plsWeights, dtype=float)
-        self._logUnit = float(np.log(unitScale)) if unitScale > 0 else 0.0
         dist = self.options["distance"]
+        if dist == "greatCircle" and getattr(self, "_gcUnit", None):
+            unitScale = self._gcUnit                   # distances in radius units, not the model's scale
+        self._logUnit = float(np.log(unitScale)) if unitScale > 0 else 0.0
         if dist == "greatCircle" and nx != 2:
             raise ValueError("greatCircle distance needs exactly two inputs (longitude, latitude in degrees)")
         v = self.options["V"]
@@ -195,6 +213,26 @@ class StationaryKernel(KernelBase):
         if self._pls is None and self.options["ard"] and self.options["distance"] == "scaled" and n == self.nx:
             return list(range(self.nx))
         return [0] * n
+
+    def lengthscaleColumnSets(self) -> list[list[int]]:
+        n = len(self.lengthscaleIndices())
+        if self._pls is None and n == 1 and self.options["distance"] in ("scaled", "greatCircle"):
+            return [list(range(self.nx))]              # one lengthscale shared by all inputs
+        return super().lengthscaleColumnSets()
+
+    def greatCircleColumns(self) -> list[int]:
+        return [0, 1] if self.options["distance"] == "greatCircle" else []
+
+    def adapt(self, x: np.ndarray) -> "KernelBase":
+        if self.options["distance"] == "greatCircle":
+            if x.shape[1] != 2:
+                raise ValueError("greatCircle distance needs exactly two inputs (longitude, latitude in degrees)")
+            sub = x[np.random.default_rng(0).choice(x.shape[0], min(x.shape[0], 300), replace=False)]
+            self.nx = 2
+            d = self.greatCircleDistance(sub, sub)
+            pos = d[d > 0]
+            self._gcUnit = float(np.median(pos)) if pos.size else 1.0
+        return self
 
     def initialParams(self) -> np.ndarray:
         l0 = np.log(self.options["lengthscale0"]) + self._logUnit
@@ -671,6 +709,7 @@ class Periodic(KernelBase):
         declare("periodBounds", [1e-2, 1e2], types=list, desc="Period bounds")
 
     def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
+        self._rejectPls(plsWeights)
         self.nx = nx
         self._logUnit = float(np.log(unitScale)) if unitScale > 0 else 0.0
         return self
@@ -744,6 +783,7 @@ class Gneiting(KernelBase):
         declare("lengthscaleBounds", [1e-3, 1e3], types=list, desc="Lengthscale bounds")
 
     def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
+        self._rejectPls(plsWeights)
         if nx < 2:
             raise ValueError("gneiting needs at least one space and one time input")
         self.nx = nx
@@ -764,6 +804,9 @@ class Gneiting(KernelBase):
 
     def lengthscaleColumns(self) -> list[int]:
         return [int(self._s[0]), int(self._t)]
+
+    def lengthscaleColumnSets(self) -> list[list[int]]:
+        return [[int(j) for j in self._s], [int(self._t)]]
 
     def initialParams(self) -> np.ndarray:
         l0 = np.log(self.options["lengthscale0"]) + self._logUnit
@@ -819,6 +862,11 @@ class _WrappedKernel(KernelBase):
             self.options["kernel"] = self._built
         return self._built
 
+    def greatCircleColumns(self) -> list[int]:
+        if self._child().greatCircleColumns():
+            raise ValueError(f"{self.registryName} cannot wrap a greatCircle kernel (it transforms the inputs)")
+        return []
+
     def gradients(self, x, p) -> list[np.ndarray]:
         p = np.asarray(p, dtype=float)
         out = []
@@ -853,6 +901,7 @@ class WarpedKernel(_WrappedKernel):
         declare("warpBounds", [-2.0, 2.0], types=list, desc="Bounds of log(delta) and epsilon")
 
     def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
+        self._rejectPls(plsWeights)
         self.nx = nx
         self._child().setup(nx, None, unitScale)
         return self
@@ -865,6 +914,9 @@ class WarpedKernel(_WrappedKernel):
 
     def lengthscaleColumns(self) -> list[int]:
         return self._child().lengthscaleColumns()
+
+    def lengthscaleColumnSets(self) -> list[list[int]]:
+        return self._child().lengthscaleColumnSets()
 
     def initialParams(self) -> np.ndarray:
         return np.concatenate([self._child().initialParams(), np.zeros(2 * self.nx)])
@@ -907,7 +959,9 @@ class NonstationaryKernel(_WrappedKernel):
 
     rho is the correlation profile of the child stationary kernel. phi:
     "linear" (the inputs) or "rbf" (Gaussian bumps on a grid of ``nCenters``
-    centres over the standardized input box [-2, 2]^d).
+    centres over [-2, 2]^d). Both act on the inputs standardized by the
+    training data (``adapt``), so the field covers the data whatever the
+    model's input scaling.
     """
 
     def _declareOptions(self, declare) -> None:
@@ -918,8 +972,17 @@ class NonstationaryKernel(_WrappedKernel):
         declare("lengthscaleBounds", [1e-3, 1e3], types=list, desc="Bounds of the base lengthscale")
         declare("coefficientBounds", [-3.0, 3.0], types=list, desc="Bounds of the field coefficients")
 
+    def adapt(self, x: np.ndarray) -> "KernelBase":
+        sx = x.std(axis=0)
+        self._fieldCenter = x.mean(axis=0)
+        self._fieldScale = np.where(sx > 0, sx, 1.0)
+        return self
+
     def setup(self, nx: int, plsWeights: Optional[np.ndarray] = None, unitScale: float = 1.0) -> "KernelBase":
+        self._rejectPls(plsWeights)
         self.nx = nx
+        if getattr(self, "_fieldCenter", None) is None or self._fieldCenter.size != nx:
+            self._fieldCenter, self._fieldScale = np.zeros(nx), np.ones(nx)
         child = self._child()
         if not isinstance(child, StationaryKernel):
             raise ValueError("nonstationary needs a stationary child kernel")
@@ -944,6 +1007,9 @@ class NonstationaryKernel(_WrappedKernel):
     def lengthscaleIndices(self) -> list[int]:
         return [0]
 
+    def lengthscaleColumnSets(self) -> list[list[int]]:
+        return [list(range(self.nx))]
+
     def initialParams(self) -> np.ndarray:
         child = self._child()
         shape = child.initialParams()[1:]
@@ -958,27 +1024,31 @@ class NonstationaryKernel(_WrappedKernel):
         return ["log_lengthscale0"] + [f"field{j}" for j in range(self._nBasis())] + self._child().paramNames()[1:]
 
     def _phi(self, x) -> np.ndarray:
+        x = (x - self._fieldCenter) / self._fieldScale
         if self.options["basis"] == "linear":
             return x
         d2 = np.sum((x[..., None, :] - self._centers) ** 2, axis=-1)
         return np.exp(-0.5 * d2 / self._width ** 2)
 
-    def lengthscale(self, x, p) -> np.ndarray:
-        """l(x) on standardized inputs."""
-        p = np.asarray(p, dtype=float)
+    def _logLengthscale(self, x, p) -> np.ndarray:
         nb = self._nBasis()
-        return np.exp(p[0] + self._phi(np.asarray(x, dtype=float)) @ p[1:1 + nb])
+        return p[0] + self._phi(np.asarray(x, dtype=float)) @ p[1:1 + nb]
+
+    def lengthscale(self, x, p) -> np.ndarray:
+        """l(x) in the kernel's input units."""
+        return np.exp(self._logLengthscale(x, np.asarray(p, dtype=float)))
 
     def _core(self, xa, xb, p, batched: bool):
         p = np.asarray(p, dtype=float)
-        la, lb = self.lengthscale(xa, p), self.lengthscale(xb, p)
-        l2a, l2b = (la ** 2)[..., :, None], (lb ** 2)[..., None, :]
-        mean = 0.5 * (l2a + l2b)
+        ga, gb = self._logLengthscale(xa, p)[..., :, None], self._logLengthscale(xb, p)[..., None, :]
+        # l^2 + l'^2 and the prefactor (l l' / mean)^(d/2) in logs: no overflow for wide input ranges
+        logMean = np.logaddexp(2.0 * ga, 2.0 * gb) - np.log(2.0)
+        mean = np.exp(logMean)
         if batched:
             d2 = np.sum((xa[:, :, None, :] - xb[:, None, :, :]) ** 2, axis=-1)
         else:
             d2 = weightedSqDist(xa, xb, np.ones(self.nx))
-        pre = (np.sqrt(l2a * l2b) / mean) ** (0.5 * self.nx)
+        pre = np.exp(0.5 * self.nx * (ga + gb - logMean))
         child = self._child()
         ps = p[1 + self._nBasis():]
         return pre * child._f(d2 / mean, ps)
@@ -1031,6 +1101,29 @@ class _CompositeKernel(KernelBase):
     def _sub(self, x, i):
         c = self._cols[i]
         return x if c is None else x[..., c]
+
+    def _optionCols(self) -> list:
+        cols = self.options["columns"]
+        return [None] * len(self._children()) if cols is None else \
+            [None if c is None else np.asarray(c, dtype=int) for c in cols]
+
+    def greatCircleColumns(self) -> list[int]:
+        out = set()
+        for k, c in zip(self._children(), self._optionCols()):
+            out.update(int(j) if c is None else int(c[j]) for j in k.greatCircleColumns())
+        return sorted(out)
+
+    def adapt(self, x: np.ndarray) -> "KernelBase":
+        for k, c in zip(self._children(), self._optionCols()):
+            k.adapt(x if c is None else x[:, c])
+        return self
+
+    def lengthscaleColumnSets(self) -> list[list[int]]:
+        out = []
+        for i, k in enumerate(self._children()):
+            c = self._cols[i] if hasattr(self, "_cols") else None
+            out.extend([j if c is None else int(c[j]) for j in cs] for cs in k.lengthscaleColumnSets())
+        return out
 
     def _localColumn(self, i, kx):
         """Index of input kx within child i, or None when the child does not use it."""

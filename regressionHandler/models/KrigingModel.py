@@ -48,6 +48,33 @@ from pythonLibs.regressionHandler.sampling.Sampling import latinHypercube
 _TREND_DEGREE = {"none": -1, "constant": 0, "linear": 1, "quadratic": 2}
 
 
+def fullLogLikelihood(nll: float, dof: int, yStd: float) -> float:
+    """Maximized (restricted) log-likelihood on the output scale from a profiled objective.
+
+    The profiled objective 0.5 (dof log sigma2 + log|R| [+ log|F^T R^-1 F|]) of the
+    standardized output omits -dof/2 (1 + log 2 pi) and the Jacobian dof log(yStd).
+    """
+    return float(-nll - 0.5 * dof * (1.0 + np.log(2.0 * np.pi)) - dof * np.log(yStd))
+
+
+def _independentColumns(f: np.ndarray, rtol: float = 1e-10) -> np.ndarray:
+    """Indices of a maximal set of linearly independent columns (greedy Gram-Schmidt, first kept)."""
+    if f.shape[1] == 0:
+        return np.zeros(0, dtype=int)
+    scale = max(float(np.max(np.linalg.norm(f, axis=0))), 1e-300)
+    basis, keep = [], []
+    for j in range(f.shape[1]):
+        v = f[:, j].astype(float).copy()
+        for _ in range(2):                                  # re-orthogonalize once
+            for b in basis:
+                v -= (b @ v) * b
+        nv = float(np.linalg.norm(v))
+        if nv > rtol * max(scale, float(np.linalg.norm(f[:, j]))) and nv > rtol * scale:
+            basis.append(v / nv)
+            keep.append(j)
+    return np.array(keep, dtype=int)
+
+
 @registry("model").register("kriging")
 class KrigingModel(SurrogateModelBase):
     """Universal Kriging / GP regression with estimated noise (KPLS with plsComponents)."""
@@ -95,6 +122,8 @@ class KrigingModel(SurrogateModelBase):
             raise ValueError("spatialColumns must list valid input columns")
         kernel = buildKernel(self.options["corr"])
         greatCircle = kernel.options.get("distance") == "greatCircle" if "distance" in kernel.options else False
+        # longitude / latitude columns of great-circle kernels (also inside composites) stay in degrees
+        gcCols = self._sc[kernel.greatCircleColumns()] if kernel.greatCircleColumns() else np.zeros(0, dtype=int)
         if self.options["normalize"]:
             self._xMean = x.mean(axis=0)
             sx = x.std(axis=0)
@@ -102,9 +131,8 @@ class KrigingModel(SurrogateModelBase):
             self._yMean = float(y.mean())
             sy = float(y.std())
             self._yStd = sy if sy > 0 else 1.0
-            if greatCircle:
-                self._xMean[self._sc] = 0.0
-                self._xStd[self._sc] = 1.0
+            self._xMean[gcCols] = 0.0
+            self._xStd[gcCols] = 1.0
         else:
             self._xMean, self._xStd = np.zeros(self.nx), np.ones(self.nx)
             self._yMean, self._yStd = 0.0, 1.0
@@ -115,8 +143,14 @@ class KrigingModel(SurrogateModelBase):
         self._pls = None
         if self.options["plsComponents"]:
             self._pls = plsRotations(self._xs[:, self._sc], self._ys, self.options["plsComponents"])
-        self._kernel = kernel.setup(self._sc.size, self._pls, self._unitScale)
+        self._kernel = self._setupKernel(kernel)
         self._buildTrend()
+
+    def _setupKernel(self, kernel=None):
+        """Kernel adapted to the scaled training inputs and set up (also used when loading)."""
+        kernel = buildKernel(self.options["corr"]) if kernel is None else kernel
+        kernel.adapt(self._xs[:, self._sc])
+        return kernel.setup(self._sc.size, self._pls, self._unitScale)
 
     def _typicalScale(self, kernel, greatCircle: bool) -> float:
         """Unit for lengthscale starts / bounds: 1 when standardized, else the data spread."""
@@ -143,11 +177,26 @@ class KrigingModel(SurrogateModelBase):
             deg = _TREND_DEGREE[self.options["poly"]]
             self._trend = None
             self._polyTrend = PolynomialBasis(degree=deg).fit(self._xs[:, self._sc]) if deg >= 0 else None
+        self._trendKeep = None
+        full = self._trendMatrix(self._xs)
+        self._trendKeep = _independentColumns(full)
+        if self._trendKeep.size == full.shape[1]:
+            self._trendKeep = None
         self._f = self._trendMatrix(self._xs)
         if self._f.shape[1] >= n:
             raise ValueError(f"trend has {self._f.shape[1]} terms but only {n} points")
 
     def _trendMatrix(self, xs) -> np.ndarray:
+        f = self._trendMatrixFull(xs)
+        keep = getattr(self, "_trendKeep", None)
+        return f if keep is None else f[:, keep]
+
+    def _trendDerivative(self, xs, kx: int) -> np.ndarray:
+        d = self._trendDerivativeFull(xs, kx)
+        keep = getattr(self, "_trendKeep", None)
+        return d if keep is None else d[:, keep]
+
+    def _trendMatrixFull(self, xs) -> np.ndarray:
         if self._trend is not None:
             return self._trend.transform(xs)
         cols = []
@@ -157,7 +206,7 @@ class KrigingModel(SurrogateModelBase):
             cols.append(xs[:, self._covCols])
         return np.hstack(cols) if cols else np.zeros((xs.shape[0], 0))
 
-    def _trendDerivative(self, xs, kx: int) -> np.ndarray:
+    def _trendDerivativeFull(self, xs, kx: int) -> np.ndarray:
         if self._trend is not None:
             if self._trend.hasDerivative:
                 return self._trend.derivative(xs, kx)
@@ -413,7 +462,9 @@ class KrigingModel(SurrogateModelBase):
         self._gcv = float(gcv * self._yStd ** 2)
         self._sigma2Ml = sigma2Ml
         criterion = self.options["likelihood"]
-        self._logLik = -float(self._negLogLikelihood(p, "reml" if criterion == "gcv" else criterion)[0])
+        crit = "reml" if criterion == "gcv" else criterion
+        self._logLik = fullLogLikelihood(float(self._negLogLikelihood(p, crit)[0]), n - q if crit == "reml" else n,
+                                         self._yStd)
 
     # ------------------------------------------------------------------ prediction
     def _scaled(self, x):
@@ -476,12 +527,12 @@ class KrigingModel(SurrogateModelBase):
         names = self._kernel.paramNames() + (["log_nugget"] if self._autoNugget else [])
         out = {}
         nk = self._kernel.nParams()
-        lsCol = dict(zip(self._kernel.lengthscaleIndices(), self._kernel.lengthscaleColumns()))
+        lsCols = dict(zip(self._kernel.lengthscaleIndices(), self._kernel.lengthscaleColumnSets()))
         for i, name in enumerate(names):
-            if i in lsCol and self._pls is None:
-                col = self._sc[lsCol[i]]
-                scale = self._xStd[col] if self._kernel.options.get("distance", "scaled") != "greatCircle" else 1.0
-                out[name.replace("log_", "")] = float(np.exp(logP[i]) * scale)
+            if i in lsCols and self._pls is None:
+                # a lengthscale shared by columns of different spread is reported per column
+                vals = np.exp(logP[i]) * self._xStd[self._sc[lsCols[i]]]
+                out[name.replace("log_", "")] = float(vals[0]) if np.allclose(vals, vals[0]) else vals.tolist()
             elif name == "log_nu":
                 out["nu"] = float(np.exp(logP[i]))
             elif name == "log_nugget":
@@ -604,8 +655,15 @@ class KrigingModel(SurrogateModelBase):
         report = self._paramReport(self._params)
         ranges = getattr(self._kernel, "rangeParameters", None)
         if callable(ranges) and self._kernel.options.get("distance", "scaled") == "scaled" and self._pls is None:
-            ar = ranges(self._kp) * self._xStd[self._sc][: ranges(self._kp).size]
-            out["range"] = ar.tolist() if ar.size > 1 else float(ar[0])
+            r = ranges(self._kp)
+            sets = self._kernel.lengthscaleColumnSets()
+            if r.size == 1 and len(sets) == 1:
+                # isotropic: the range in each column's units (one value if the spreads agree)
+                ar = r[0] * self._xStd[self._sc[sets[0]]]
+                out["range"] = float(ar[0]) if np.allclose(ar, ar[0]) else ar.tolist()
+            else:
+                ar = r * self._xStd[self._sc][: r.size]
+                out["range"] = ar.tolist() if ar.size > 1 else float(ar[0])
         else:
             lengths = [v for k, v in report.items() if "engthscale" in k]
             if lengths:
@@ -708,7 +766,7 @@ class KrigingModel(SurrogateModelBase):
         sc = self.options["spatialColumns"]
         self._sc = np.arange(self.nx) if sc is None else np.asarray(sc, dtype=int)
         self._unitScale = float(state.get("unitScale", 1.0))
-        self._kernel = buildKernel(self.options["corr"]).setup(self._sc.size, self._pls, self._unitScale)
+        self._kernel = self._setupKernel()
         self._buildTrend()
         self._optResult = None
         self._cache = None
