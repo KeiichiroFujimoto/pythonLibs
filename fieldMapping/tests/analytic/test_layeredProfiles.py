@@ -76,7 +76,7 @@ def test_layerNormalizationMatchesInterfaces():
     np.testing.assert_allclose(T[at], 600.0, atol=1e-8)
     np.testing.assert_allclose(T[np.isclose(m.points[:, 2], H)], 1000.0, atol=1e-8)
     # a profile linear through the whole depth: layer-normalized puts the station interface value (z = 0.010)
-    # on the 3-D interface, depth mode the value at the 3-D depth (0.012); both are exact nodal fields
+    # on the 3-D interface, depth mode the value at the 3-D depth (0.012); both nodal results are exact
     lin = lambda t, a: 1000.0 - 20000.0 * DEPTH                                          # noqa: E731
     r1 = LayeredProfileMapper(m, _stations(lin), mats, layers=[1, 2]).map()
     r2 = LayeredProfileMapper(m, _stations(lin), mats, layers=[1, 2], depthMode="depth").map()
