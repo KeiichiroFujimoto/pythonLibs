@@ -143,7 +143,7 @@ class Element:
 
     def __init__(self, vtkType: int, dim: int, ref, shape: Callable, dshape: Callable, rule: Callable,
                  faces: Optional[list] = None, faceTypes: Optional[list] = None, corners: Optional[int] = None,
-                 linearType: Optional[int] = None) -> None:
+                 linearType: Optional[int] = None, orientation: int = 1) -> None:
         self.vtkType = vtkType
         self.name = TYPE_NAMES[vtkType]
         self.dim = dim
@@ -155,6 +155,8 @@ class Element:
         self.corners = corners or self.nNodes
         self.linearType = linearType or vtkType
         self.quadratic = linearType is not None and linearType != vtkType
+        # sign of det(dx/dxi) for a valid VTK cell (the VTK wedge base (0, 1, 2) faces away from (3, 4, 5))
+        self.orientation = int(orientation)
 
     def shape(self, xi) -> np.ndarray:
         return self._shape(np.atleast_2d(np.asarray(xi, dtype=float)))
@@ -453,7 +455,7 @@ _HEX_FACES = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 
 _register(Element(HEXAHEDRON, 3, _H8, _hex8, _dhex8, cubeRule, faces=_HEX_FACES, faceTypes=[QUAD] * 6))
 _WEDGE_FACES = [[0, 1, 2], [3, 5, 4], [0, 3, 4, 1], [1, 4, 5, 2], [2, 5, 3, 0]]
 _register(Element(WEDGE, 3, [[0, 0, -1], [1, 0, -1], [0, 1, -1], [0, 0, 1], [1, 0, 1], [0, 1, 1]], _wedge6, _dwedge6,
-                  wedgeRule, faces=_WEDGE_FACES, faceTypes=[TRIANGLE, TRIANGLE, QUAD, QUAD, QUAD]))
+                  wedgeRule, faces=_WEDGE_FACES, faceTypes=[TRIANGLE, TRIANGLE, QUAD, QUAD, QUAD], orientation=-1))
 _PYR_FACES = [[0, 3, 2, 1], [0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]]
 _register(Element(PYRAMID, 3, [[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0], [0, 0, 1]], _pyr5, _dpyr5,
                   pyramidRule, faces=_PYR_FACES, faceTypes=[QUAD, TRIANGLE, TRIANGLE, TRIANGLE, TRIANGLE]))
@@ -488,7 +490,7 @@ _W15_REF = np.array([[0, 0, -1], [1, 0, -1], [0, 1, -1], [0, 0, 1], [1, 0, 1], [
 _register(Element(QUADRATIC_WEDGE, 3, _W15_REF, _wedge15, _dwedge15, wedgeRule,
                   faces=_quadraticFaces(_WEDGE_FACES, _W15_EDGE_NODES),
                   faceTypes=[QUADRATIC_TRIANGLE, QUADRATIC_TRIANGLE, QUADRATIC_QUAD, QUADRATIC_QUAD, QUADRATIC_QUAD],
-                  corners=6, linearType=WEDGE))
+                  corners=6, linearType=WEDGE, orientation=-1))
 
 
 def element(vtkType: int) -> Element:

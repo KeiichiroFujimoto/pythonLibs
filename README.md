@@ -41,7 +41,8 @@ self-implemented numerics on numpy) as a toolBaseSecured service; see
 
 `fieldMapping` transfers field data between non-matching meshes while conserving
 their integrals (VTU with arbitrary polyhedra, finite-element integration,
-conservative sign-preserving surface flux transfer); see
+conservative sign-preserving surface flux transfer, energy-conserving mapping of
+layered 1-D profiles to 3-D) as a toolBaseSecured service; see
 [fieldMapping/README.md](fieldMapping/README.md).
 
 Domain packages such as aerospace, world models, CAD, agents, and application

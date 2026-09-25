@@ -274,7 +274,7 @@ class UnstructuredMesh:
         rows = np.concatenate([p[3][0] + o for p, o in zip(parts, offs)])
         cols = np.concatenate([p[3][1] for p in parts])
         vals = np.concatenate([p[3][2] for p in parts])
-        return Quadrature(cell, weight, x, SparseMatrix(rows, cols, vals, (cell.size, self.nPoints)))
+        return Quadrature(cell, weight, x, SparseMatrix.raw(rows, cols, vals, (cell.size, self.nPoints)))
 
     @staticmethod
     def _measure(jac: np.ndarray) -> np.ndarray:
@@ -415,7 +415,7 @@ class UnstructuredMesh:
             # inverted cells (negative Jacobian) get their faces reversed so they still point outward
             centre = el.ref.mean(axis=0, keepdims=True)
             jac = np.einsum("ae,kad->kde", el.dshape(centre)[0], self.points[conn])
-            inverted = np.linalg.det(jac) < 0
+            inverted = np.linalg.det(jac) * el.orientation < 0
             for j, (fl, ft) in enumerate(zip(el.faces, el.faceTypes)):
                 nodes = conn[:, fl]
                 k = 3 if ft in (5, 22) else 4

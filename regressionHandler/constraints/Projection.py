@@ -138,10 +138,12 @@ def projectAffine(x0, w, c, d, lb=None, ub=None, tol: float = 1e-12, maxIter: in
 
 
 def projectNonlinear(x0, w, constraint: Callable[[np.ndarray], tuple[np.ndarray, SparseMatrix]], d, lb=None,
-                     ub=None, tol: float = 1e-10, maxIter: int = 50, start=None) -> ProjectionResult:
+                     ub=None, tol: float = 1e-10, maxIter: int = 50, start=None, scale=None) -> ProjectionResult:
     """Weighted projection of x0 onto {g(x) = d, lb <= x <= ub} by sequential linearization.
 
     ``constraint(x)`` returns (g(x) (m,), Jacobian dg/dx as SparseMatrix (m, n)).
+    ``scale`` (m,) sets the size of each constraint for the tolerance (default |d|);
+    give it when a target can be zero.
     """
     x0 = np.asarray(x0, dtype=float).ravel()
     n = x0.size
@@ -150,11 +152,12 @@ def projectNonlinear(x0, w, constraint: Callable[[np.ndarray], tuple[np.ndarray,
     ubA = np.broadcast_to(np.inf if ub is None else np.asarray(ub, dtype=float), (n,))
     x = np.clip(x0 if start is None else np.asarray(start, dtype=float), lbA, ubA)
     g, jac = constraint(x)
-    scale = np.maximum(np.abs(d), 1e-300)
+    scale = np.maximum(np.abs(d), 1e-300) if scale is None else \
+        np.maximum(np.broadcast_to(np.asarray(scale, dtype=float), d.shape), 1e-300)
     lam = np.zeros(d.size)
     it = 0
     xScale = max(float(np.max(np.abs(x0))), 1e-300)
-    feasible = bool(np.all(np.abs(g - d) <= tol * np.maximum(scale, np.abs(g))))
+    feasible = bool(np.all(np.abs(g - d) <= tol * scale))
     stationary = False
     # stop only when the constraints hold AND the linearized projection no longer moves the point
     # (a KKT point of the nonlinear problem); feasibility alone is reached after one step
@@ -173,7 +176,7 @@ def projectNonlinear(x0, w, constraint: Callable[[np.ndarray], tuple[np.ndarray,
             t *= 0.5
         stationary = float(np.max(np.abs(xt - x))) <= 1e3 * np.finfo(float).eps * xScale + tol * xScale
         x, g, jac, lam = xt, gt, jt, sub.multipliers
-        feasible = bool(np.all(np.abs(g - d) <= tol * np.maximum(scale, np.abs(g))))
+        feasible = bool(np.all(np.abs(g - d) <= tol * scale))
     return ProjectionResult(x, lam, g - d, (x <= lbA) | (x >= ubA), it, feasible and stationary)
 
 

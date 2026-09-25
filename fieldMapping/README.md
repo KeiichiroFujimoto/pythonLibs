@@ -17,6 +17,13 @@ the Python standard library only.
   the two surfaces, incoming and outgoing heat conserved separately to round-off,
   no heat of the wrong sign, automatic normal orientation, cell / nodal-load / nodal
   flux outputs.
+- **Energy-conserving mapping of layered 1-D profiles** (`LayeredProfileMapper`):
+  through-thickness temperature histories computed at several surface stations are
+  mapped onto a 3-D mesh with layer-normalized depth, surface interpolation between
+  stations and exact conservation of thermal energy (temperature-dependent cp) per
+  station region and layer, without new extrema.
+- **toolBase service** (`FieldMappingHandler`): the same operations as commands on
+  .vtu / .pvd files.
 
 ## Layout
 
@@ -28,6 +35,9 @@ fieldMapping/
   mesh/Generators.py      structuredBox, planeSurface, sphereSurface, sphericalShell
   Geometry.py             box pair search, polygon clipping, closest points
   SurfaceFluxMapper.py    conservative, sign-preserving surface flux transfer
+  LayeredProfileMapper.py layered 1-D profiles -> 3-D temperatures with energy conservation
+  Material.py             density and cp(T) with exact energy integrals
+  FieldMappingHandler.py  toolBaseSecured service (@secure_expose commands)
   tests/analytic/         closed-form verification
 ```
 
@@ -79,6 +89,71 @@ res.attach(mapper.target)                   # cell flux, heat in / out, nodal lo
   parts separately with sign bounds, optional per-group heat constraints)
 - the overlap geometry is computed once; `map` can be called for every time step
 
+## Energy-conserving mapping of layered 1-D profiles
+
+```python
+from pythonLibs.fieldMapping import LayeredProfileMapper, readVtu
+
+structure = readVtu("structure.vtu")              # cells carry a layer label (cell array "layer")
+stations = [{"position": [x, y, z],               # point on the outer surface
+             "time": times,                       # (nt,)
+             "depth": depth,                      # (nz,) or (nt, nz), below the current surface
+             "interfaces": [0.0, 0.012, 0.030],   # layer boundary depths, (L + 1,) or (nt, L + 1)
+             "temperature": T}                    # (nt, nz)
+            for (x, y, z), depth, T in profiles]
+materials = {1: {"density": 280.0, "cp": [[300, 1100], [2500, 2000]]},   # outer layer, cp(T) table
+             2: {"density": 1600.0, "cp": 1000.0}}
+mapper = LayeredProfileMapper(structure, stations, materials, layers=[1, 2])
+res = mapper.map()                                # all station times (or map(times=[...]))
+res.summary()                                     # max relative energy error, convergence
+mapper.writeSeries(res, "temperature.pvd")
+```
+
+1. **Layer-normalized depth**: a node in layer l gets xi = a / (a + b) from its distances
+   to the upper and lower surfaces of that layer in the 3-D mesh (outer surface,
+   material interfaces, inner surface; found from the layer labels). Each station
+   maps xi into its own layer, so layer boundaries coincide even when 3-D and 1-D
+   thicknesses differ (surface recession, design changes). `depthMode="depth"` uses
+   the distance to the outer surface instead.
+2. **Between stations**: weights of the node's foot point on the outer surface:
+   inverse distance (positive, default), ordinary Kriging (smooth) or nearest station.
+3. **Reference energy**: the continuous interpolated field is integrated with a
+   high-order rule (`referenceOrder`), which resolves steep near-surface gradients that
+   the 3-D mesh cannot hold nodally (a coarse through-thickness mesh loses 10-40 % of
+   the energy by plain nodal interpolation).
+4. **Conservation**: the nodal temperatures are corrected by the smallest change in the
+   heat-capacity metric that makes the finite-element energy equal the reference energy
+   in every group (`conservation`: station region x layer, layer, global or cell),
+   nonlinear through cp(T), with every node kept inside the range of the station values
+   around its depth. The final relative energy error is at round-off level.
+
+The outer surface is found from the layer labels (faces of the outer layer facing away
+from the first interface; with one layer, facing along the station normals); it can
+also be given as a surface mesh (`outerSurface`).
+
+## toolBase service
+
+```python
+from pythonLibs.fieldMapping import FieldMappingHandler
+
+fm = FieldMappingHandler()
+fm.invoke("loadMesh", filePath="flow.vtu", meshName="flow")
+fm.invoke("loadMesh", filePath="structure.vtu", meshName="structure")
+fm.invoke("mapSurfaceFlux", sourceMesh="flow", targetMesh="structure", arrayName="q", pointFlux=True,
+          outputFile="flux.vtu")                          # or sourceSeries="flow.pvd", outputFile="flux.pvd"
+fm.invoke("mapLayeredProfiles", targetMesh="structure", stationsFile="stations.json",
+          materials={"1": {...}, "2": {...}}, layers=[1, 2], outputFile="temperature.pvd")
+```
+
+| Command | Purpose |
+|---|---|
+| `loadMesh`, `listMeshes`, `meshSummary`, `deleteMesh`, `writeMesh` | .vtu meshes in named slots |
+| `extractSurface` | boundary surface or material interfaces of a volume mesh |
+| `mapSurfaceFlux` | conservative, sign-preserving flux transfer (single field or .pvd series) |
+| `mapLayeredProfiles` | energy-conserving mapping of layered 1-D profiles, .pvd output |
+
+The class auto-registers in `LabRegistry` as `fieldMapping`.
+
 ## Tests
 
 ```bash
@@ -89,4 +164,7 @@ python -m pytest fieldMapping/tests -q
 areas (also non-convex polyhedra), fourth-order geometry of quadratic cells, VTU round
 trips, clipping and search kernels, and for the flux transfer: exact reproduction on
 identical meshes, conservation per sign to round-off, second-order convergence under
-refinement, partial targets and linear reconstruction.
+refinement, partial targets and linear reconstruction; for the layered mapping: exact
+reproduction of profiles linear within each layer (all cell types), layer-normalized
+interface matching, energy conservation to round-off with bounds, reference energy
+against the 1-D integral, curved multi-layer shells with every weighting.

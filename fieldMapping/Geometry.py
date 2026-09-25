@@ -227,3 +227,66 @@ def closestPointOnTriangles(p: np.ndarray, tri: np.ndarray):
     setb(np.ones(p.shape[0], dtype=bool), np.column_stack([1 - vv - ww, vv, ww]))
     q = np.einsum("mk,mkd->md", bary, tri)
     return q, np.linalg.norm(p - q, axis=1), bary
+
+
+# ---------------------------------------------------------------- point-to-surface queries
+class SurfaceLocator:
+    """Exact closest points on a triangulated surface for many query points.
+
+    Pass 1 bounds the distance through the nearest triangle centroids; pass 2
+    tests every triangle whose bounding box lies within that bound, so the
+    result is the exact closest point on the triangulation.
+    """
+
+    def __init__(self, triangles: np.ndarray, parent: np.ndarray, nNearest: int = 8) -> None:
+        from pythonLibs.regressionHandler.numerics.NeighborSearch import NeighborSearch
+        self.tri = np.asarray(triangles, dtype=float)
+        self.parent = np.asarray(parent, dtype=np.int64)
+        if self.tri.shape[0] == 0:
+            raise ValueError("empty surface")
+        self._lo, self._hi = self.tri.min(axis=1), self.tri.max(axis=1)
+        self._search = NeighborSearch(self.tri.mean(axis=1))
+        self._k = min(nNearest, self.tri.shape[0])
+
+    @classmethod
+    def fromMesh(cls, mesh, cells=None) -> "SurfaceLocator":
+        tri, par = mesh.triangulate()
+        if cells is not None:
+            sel = np.zeros(mesh.nCells, dtype=bool)
+            sel[np.asarray(cells)] = True
+            keep = sel[par]
+            tri, par = tri[keep], par[keep]
+        return cls(mesh.points[tri], par)
+
+    def closest(self, points: np.ndarray, chunk: int = 100_000):
+        """(distance, closest point, triangle index, barycentric) for points (n, 3)."""
+        p = np.asarray(points, dtype=float)
+        n = p.shape[0]
+        dist = np.full(n, np.inf)
+        cp = np.zeros((n, 3))
+        tid = np.zeros(n, dtype=np.int64)
+        bary = np.zeros((n, 3))
+        for s in range(0, n, chunk):
+            q = p[s:s + chunk]
+            _, cand = self._search.query(q, self._k)
+            ii = np.repeat(np.arange(q.shape[0]), self._k)
+            jj = cand.ravel()
+            c, d, b = closestPointOnTriangles(q[ii], self.tri[jj])
+            best = np.full(q.shape[0], np.inf)
+            np.minimum.at(best, ii, d)
+            # pass 2: all triangles whose box is within the bound
+            r = best[:, None] * (1 + 1e-12) + 1e-300
+            i2, j2 = boxPairs(q - r, q + r, self._lo, self._hi)
+            c2, d2, b2 = closestPointOnTriangles(q[i2], self.tri[j2])
+            order = np.lexsort((d2, i2))
+            i2, j2, c2, d2, b2 = i2[order], j2[order], c2[order], d2[order], b2[order]
+            first = np.concatenate([[True], i2[1:] != i2[:-1]]) if i2.size else np.zeros(0, bool)
+            i2, j2, c2, d2, b2 = i2[first], j2[first], c2[first], d2[first], b2[first]
+            sl = slice(s, s + q.shape[0])
+            dist[sl][i2], cp[sl][i2], tid[sl][i2], bary[sl][i2] = d2, c2, j2, b2
+        return dist, cp, tid, bary
+
+    def normals(self, tid: np.ndarray) -> np.ndarray:
+        t = self.tri[tid]
+        n = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
+        return n / np.maximum(np.linalg.norm(n, axis=1), 1e-300)[:, None]

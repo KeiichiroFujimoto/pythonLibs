@@ -31,16 +31,36 @@ class SparseMatrix:
         if row.size and (row.min() < 0 or row.max() >= m or col.min() < 0 or col.max() >= n):
             raise ValueError("sparse index out of range")
         key = row * n + col
-        order = np.argsort(key, kind="stable")
-        key, data = key[order], data[order]
-        uniq, start = np.unique(key, return_index=True)
-        summed = np.add.reduceat(data, start) if data.size else data
+        if key.size and np.any(key[1:] < key[:-1]):
+            order = np.argsort(key, kind="stable")
+            key, data = key[order], data[order]
+        if key.size:
+            start = np.flatnonzero(np.concatenate([[True], key[1:] != key[:-1]]))
+            uniq = key[start]
+            summed = np.add.reduceat(data, start) if start.size < key.size else data
+        else:
+            uniq, summed = key, data
         self.shape = (m, n)
         self.row = (uniq // n).astype(np.int64) if n else uniq
         self.col = (uniq % n).astype(np.int64) if n else uniq
         self.data = summed
 
     # ------------------------------------------------------------------ construction
+    @classmethod
+    def raw(cls, row, col, data, shape) -> "SparseMatrix":
+        """Fast construction for operators built row by row: entries are only ordered by row
+        (stable), duplicates are kept (they add up in every product)."""
+        out = cls.__new__(cls)
+        row = np.asarray(row, dtype=np.int64).ravel()
+        col = np.asarray(col, dtype=np.int64).ravel()
+        data = np.asarray(data, dtype=float).ravel()
+        if row.size and np.any(row[1:] < row[:-1]):
+            order = np.argsort(row, kind="stable")
+            row, col, data = row[order], col[order], data[order]
+        out.shape = (int(shape[0]), int(shape[1]))
+        out.row, out.col, out.data = row, col, data
+        return out
+
     @classmethod
     def fromDense(cls, a, tol: float = 0.0) -> "SparseMatrix":
         a = np.atleast_2d(np.asarray(a, dtype=float))
@@ -76,7 +96,10 @@ class SparseMatrix:
         if x.ndim == 1:
             return np.bincount(self.row, weights=self.data * x[self.col], minlength=self.shape[0])
         out = np.zeros((self.shape[0],) + x.shape[1:])
-        np.add.at(out, self.row, self.data[:, None] * x[self.col])
+        if self.nnz:
+            # entries are sorted by row: segment sums
+            start = np.flatnonzero(np.concatenate([[True], self.row[1:] != self.row[:-1]]))
+            out[self.row[start]] = np.add.reduceat(self.data[:, None] * x[self.col], start, axis=0)
         return out
 
     def rmatvec(self, y) -> np.ndarray:
@@ -85,7 +108,11 @@ class SparseMatrix:
         if y.ndim == 1:
             return np.bincount(self.col, weights=self.data * y[self.row], minlength=self.shape[1])
         out = np.zeros((self.shape[1],) + y.shape[1:])
-        np.add.at(out, self.col, self.data[:, None] * y[self.row])
+        if self.nnz:
+            order = np.argsort(self.col, kind="stable")
+            c = self.col[order]
+            start = np.flatnonzero(np.concatenate([[True], c[1:] != c[:-1]]))
+            out[c[start]] = np.add.reduceat((self.data[:, None] * y[self.row])[order], start, axis=0)
         return out
 
     def scaleColumns(self, v) -> "SparseMatrix":
@@ -131,7 +158,7 @@ class SparseMatrix:
 
     def toDense(self) -> np.ndarray:
         out = np.zeros(self.shape)
-        out[self.row, self.col] = self.data
+        np.add.at(out, (self.row, self.col), self.data)
         return out
 
     def toDict(self) -> dict:
