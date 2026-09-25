@@ -9,6 +9,7 @@ Accepted specs:
 """
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any, Optional
 
@@ -20,6 +21,7 @@ import pythonLibs.regressionHandler.models.KrigingModel  # noqa: F401  (register
 import pythonLibs.regressionHandler.models.RbfModel  # noqa: F401  (registers rbf)
 import pythonLibs.regressionHandler.models.IdwModel  # noqa: F401  (registers idw)
 import pythonLibs.regressionHandler.models.NonlinearModel  # noqa: F401  (registers nonlinear)
+from pythonLibs.regressionHandler.models.NonlinearModel import NonlinearModel
 import pythonLibs.regressionHandler.models.SplineModel  # noqa: F401  (registers spline)
 import pythonLibs.regressionHandler.models.LocalRegressionModel  # noqa: F401  (registers loess)
 from pythonLibs.regressionHandler.models.ModelLibrary import LIBRARY, libraryCatalog
@@ -90,17 +92,26 @@ def expandShorthand(name: str) -> Optional[dict]:
     return None
 
 
+def specFromName(name: str) -> dict:
+    """Dict spec for a shorthand, a ModelLibrary form name or a registered model type."""
+    expanded = expandShorthand(name)
+    if expanded is None and name in LIBRARY and name not in registry("model"):
+        expanded = {"type": "nonlinear", "library": name}
+    return expanded if expanded is not None else {"type": name}
+
+
 def createModel(spec: Any, **overrides: Any) -> SurrogateModelBase:
     """Build an untrained model from a spec (see module docstring)."""
     if isinstance(spec, SurrogateModelBase):
-        model = spec.clone()
-        model.options.update(overrides)
-        return model
+        if not overrides:
+            return spec.clone()
+        # rebuild through the constructor so the overrides pass the model's cross-option validation and
+        # re-derive dependent options (e.g. a SplineModel basis from nSegments)
+        options = copy.deepcopy(spec.options.toDict())
+        options.update(overrides)
+        return type(spec)(**options)
     if isinstance(spec, str):
-        expanded = expandShorthand(spec)
-        if expanded is None and spec in LIBRARY and spec not in registry("model"):
-            expanded = {"type": "nonlinear", "library": spec}
-        spec = expanded if expanded is not None else {"type": spec}
+        spec = specFromName(spec)
     if not isinstance(spec, dict) or "type" not in spec:
         raise ValueError(f"model spec must be a name, shorthand or dict with 'type': {spec!r}")
     options = {k: v for k, v in spec.items() if k != "type"}
@@ -112,7 +123,9 @@ def availableModels() -> list[dict]:
     """Registered model types with their declared options, plus the shorthands."""
     out = []
     for name, cls in registry("model").items():
-        proto = cls(library="linear") if name == "nonlinear" else cls()
+        # Nonlinear-form models (nonlinear, odr) cannot be built without a form.
+        isForm = issubclass(cls, NonlinearModel)
+        proto = cls(library="linear") if isForm else cls()
         out.append({"type": name, "description": (cls.__doc__ or "").strip().split("\n")[0],
                     "supports": dict(proto.supports), "options": proto.options.describe()})
     out.extend({"type": k, "description": v, "shorthand": True} for k, v in SHORTHANDS.items())

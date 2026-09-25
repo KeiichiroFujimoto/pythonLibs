@@ -212,11 +212,18 @@ def diagnose(model, x=None, y=None, weights=None, alpha: float = 0.01) -> Diagno
             screen = np.abs(out["standardized"])
             out["influential"] = []
         out["outliers"] = [int(i) for i in np.flatnonzero(screen > 3.0)]
-        out["normalityStatistic"], out["normalityP"] = normalTest(r)
-        out["jarqueBera"], out["jarqueBeraP"] = jarqueBera(r)
-        out["breuschPagan"], out["breuschPaganP"] = breuschPagan(r, xa)
-        out["runsZ"], out["runsP"] = runsTest(r, np.argsort(fitted[:, j], kind="stable"))
-        out["durbinWatson"] = durbinWatson(r)
+        if dof > 0:
+            out["normalityStatistic"], out["normalityP"] = normalTest(r)
+            out["jarqueBera"], out["jarqueBeraP"] = jarqueBera(r)
+            out["breuschPagan"], out["breuschPaganP"] = breuschPagan(r, xa)
+            out["runsZ"], out["runsP"] = runsTest(r, np.argsort(fitted[:, j], kind="stable"))
+            out["durbinWatson"] = durbinWatson(r)
+        else:
+            # no residual degrees of freedom (an interpolant on its own data): the residuals are
+            # round-off, so the residual tests are undefined rather than evidence of misfit
+            for key in ("normalityStatistic", "normalityP", "jarqueBera", "jarqueBeraP", "breuschPagan",
+                        "breuschPaganP", "runsZ", "runsP", "durbinWatson"):
+                out[key] = np.nan
         outputs.append(out)
 
         tag = f"[{name}] "

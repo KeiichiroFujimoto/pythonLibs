@@ -19,7 +19,8 @@ def test_catalogAndRegistry():
     rh = RegressionHandler()
     ids = {c["id"] for c in rh.buildCatalog()}
     assert {"setData", "fitModel", "predict", "crossValidateModel", "saveModel", "loadModel"} <= ids
-    assert all(c["category"] == "regression" for c in rh.buildCatalog())
+    # designStudy commands are added to every tool by the local DesignStudyMixin.
+    assert all(c["category"] == "regression" for c in rh.buildCatalog() if c["category"] != "designStudy")
     assert listRegistered()["regression"] is RegressionHandler
 
 

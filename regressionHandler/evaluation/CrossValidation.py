@@ -133,8 +133,12 @@ def _safe(fn, arg):
 
 
 def _analyticLoo(model, x, y, w) -> CvResult:
-    m = model if getattr(model, "isTrained", False) and model.xt is not None and \
-        model.xt.shape == x.shape and np.array_equal(model.xt, x) else model.clone().fit(x, y, w)
+    # a trained model is reused only if it was fitted to exactly this data (inputs, outputs and weights)
+    sameData = getattr(model, "isTrained", False) and model.xt is not None and \
+        model.xt.shape == x.shape and np.array_equal(model.xt, x) and \
+        model.yt.shape == y.shape and np.array_equal(model.yt, y) and \
+        np.array_equal(model.wt, np.ones(x.shape[0]) if w is None else w)
+    m = model if sameData else model.clone().fit(x, y, w)
     loo = getattr(m, "looResiduals", None)
     if loo is None:
         raise NotImplementedError(f"{type(m).__name__} has no analytic LOO; use method='refit'")

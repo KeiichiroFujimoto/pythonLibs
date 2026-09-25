@@ -328,7 +328,8 @@ def minimizeScalar(fun: Callable[[float], float], bounds: tuple[float, float],
             if q > 0.0:
                 p = -p
             q = abs(q)
-            if abs(p) < abs(0.5 * q * e) and a * q < p + q * x - q * a and p < q * (b - x):
+            # accept the parabolic step only if it lands inside (a, b): q (a - x) < p < q (b - x)
+            if abs(p) < abs(0.5 * q * e) and q * (a - x) < p < q * (b - x):
                 e, d = d, p / q
                 u = x + d
                 if u - a < tol2 or b - u < tol2:

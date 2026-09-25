@@ -110,7 +110,7 @@ class DimensionlessModel(SurrogateModelBase):
     def _predictVariances(self, x: np.ndarray, kind: str) -> np.ndarray:
         s = self._yScale(x)
         if self._base is None:
-            v = np.full(x.shape[0], self._constVar / self.xt.shape[0] + (self._constVar if kind == "prediction" else 0))
+            v = np.full(x.shape[0], self._constVar / self.nTrain + (self._constVar if kind == "prediction" else 0))
         else:
             v = self._base.predictVariances(self._pis(x), kind)[:, 0]
         if self.options["logOutput"]:
@@ -119,6 +119,12 @@ class DimensionlessModel(SurrogateModelBase):
 
     def _effectiveParams(self):
         return 1.0 if self._base is None else float(np.ravel(self._base.nEffectiveParams)[0])
+
+    def _intervalDof(self) -> Optional[float]:
+        # intervals use the base model's residual dof (t quantiles), n - 1 for the constant fit
+        if self._base is None:
+            return float(self.nTrain - 1) if self.nTrain > 1 else None
+        return self._base.intervalDof
 
     # ------------------------------------------------------------------ reporting
     def groups(self) -> dict:
@@ -145,3 +151,5 @@ class DimensionlessModel(SurrogateModelBase):
         self._k = self._groups.shape[0]
         self._base = None if state["base"] is None else SurrogateModelBase.fromDict(state["base"])
         self._const, self._constVar = state["const"], state["constVar"]
+        if self._base is not None:
+            self.supports["variances"] = self._base.supports["variances"]

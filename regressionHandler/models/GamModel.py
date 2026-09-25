@@ -245,6 +245,7 @@ class GamModel(GlmModel):
     # ------------------------------------------------------------------ training
     def _train(self) -> None:
         y, w = self.yt[:, 0], self.wt
+        self._checkOffsetColumn()
         self._family = self._makeFamily()
         self._family.checkResponse(y)
         self._terms = [_makeTerm(s).fit(self.xt) for s in self._termSpecs()]

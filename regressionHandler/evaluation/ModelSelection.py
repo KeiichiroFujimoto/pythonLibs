@@ -236,10 +236,9 @@ def tuneHyperparameters(spec, grid: dict, x, y, weights=None, nFolds: int = 5, s
                         nJobs: int = 1) -> SelectionResult:
     """Grid search: ``grid`` maps (dotted) option paths to value lists, e.g.
     ``{"basis.degree": [2, 3, 4], "solver.alpha": [1e-4, 1e-2]}``."""
-    from pythonLibs.regressionHandler.models.ModelFactory import expandShorthand
-    base = expandShorthand(spec) if isinstance(spec, str) else copy.deepcopy(spec)
-    if base is None:
-        base = {"type": spec}
+    from pythonLibs.regressionHandler.models.ModelFactory import specFromName
+    # names resolve like createModel: shorthand, ModelLibrary form or registered type
+    base = specFromName(spec) if isinstance(spec, str) else copy.deepcopy(spec)
     keys = list(grid)
     cands = []
     for values in itertools.product(*[grid[k] for k in keys]):

@@ -357,3 +357,61 @@ python -m pytest regressionHandler/tests -q
   toolBase service.
 
 The tests use numpy and pytest only.
+
+## Additions (2026-09)
+
+- `InterpolationModel` (`createModel("interpolation")`): exact 1-D interpolation,
+  linear or not-a-knot cubic spline, extrapolation `extend` / `clamp` / `fill`,
+  analytic derivatives, callable `model(x)` with a plain-float single-point path.
+  Equal to scipy `interp1d` / `splrep(s=0)` to round-off.
+- `GridInterpolationModel` (`"gridInterpolation"`): multilinear interpolation on a
+  full rectilinear grid of any dimension (training points = grid nodes, any order),
+  extrapolation `error` / `extend` / `clamp` / `fill`. Equal to scipy
+  `RegularGridInterpolator` to 1e-13.
+- `SmoothingSplineModel` (`"smoothingSpline"`): Dierckx FITPACK smoothing spline,
+  a line-by-line port of `fpcurf` in `numerics/Fitpack.py` (knot insertion, rational
+  interpolation of the smoothing parameter, continuation with iopt = 1 via
+  `setSmoothingFactor`, knot storage enlarged when exhausted). Reproduces scipy
+  `splrep(s>0)` and `UnivariateSpline` (+ `set_smoothing_factor`) with identical knots.
+- `SupportVectorModel` (`"svr"`): epsilon-SVR solved like LIBSVM (SMO with
+  second-order working-set selection, single-precision kernel cache, same stopping
+  rule and rho). Follows LIBSVM's SMO path exactly given the same rounding of the
+  gradient update (`gradientUpdate` hook; arm64 scikit-learn builds fuse it into an FMA).
+- Linear solvers: ridge `penalty="identity"` and elasticNet `standardize=False`
+  (scikit-learn conventions; equal to `Ridge` / `Lasso` / `ElasticNet`).
+- `RbfModel.__call__`: validation-free evaluation with a fast single-point path.
+
+## Fixes (2026-09)
+
+All model families were exercised against external references (scikit-learn,
+statsmodels, scipy, R conventions, closed forms); each fix has a regression test
+(`tests/test_audit_*.py`).
+
+- `availableModels()` crashed on `OdrModel` (a nonlinear-form model).
+- `KrigingModel` raised a user-given fixed `nugget` to the 1e-12 floor meant for the
+  estimated nugget (~3x accuracy loss on near-polynomial data).
+- Kriging family: GEK / cokriging log-likelihood missing constants and the
+  normalization Jacobian; multi-output summaries failing; lengthscales reported as
+  logs (KPLS, periodic); zero nugget with duplicated inputs never optimized and NaN
+  effective dof.
+- Linear / statistical: negative-binomial theta oscillating on Poisson-like data
+  (cancellation in the score); smearing-mean derivative of TransformedTargetModel;
+  stale variance support after load; quantile SEs exactly 0 at extreme tau (now NaN
+  with a warning); ConstrainedModel not savable with array constraints;
+  DimensionlessModel intervals with normal instead of Student-t quantiles;
+  out-of-range column indices wrapping around.
+- Other: Brent minimizer rejecting parabolic steps whenever the bracket starts at
+  >= 0 (3-6x more evaluations); analytic LOO ignoring the given y / weights;
+  `createModel(instance, **overrides)` skipping validation; numpy scalar options
+  rejected; library forms rejected by `tuneHyperparameters`; ESE LHS not returning
+  the best design; brute-force neighbour distances and `pairwiseDistances` losing
+  accuracy by cancellation (linear-RBF derivatives near nodes off by O(10) for offset
+  inputs); `diagnose` warning on interpolants; single-point multi-output RBF shape;
+  NaN standard errors reported as p = 0; numpy arrays in options breaking `save()`.
+
+Checked and left as documented conventions or approximations: robust-solver SEs from
+the final WLS step, Huber MAD centring, tree split thresholds at bin midpoints, AIC
+counting the error variance, FITC jitter at tiny nuggets, Student-t cdf ~4e-9 near 0
+at very large dof, constant extrapolation of shape splines. The slogdet
+RuntimeWarnings in the test output come from the test oracles on Apple Accelerate,
+not from library code (which uses Cholesky log-determinants).

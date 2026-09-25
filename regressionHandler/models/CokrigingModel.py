@@ -31,6 +31,7 @@ from pythonLibs.regressionHandler.bases.PolynomialBasis import PolynomialBasis
 from pythonLibs.regressionHandler.core.Registry import registry
 from pythonLibs.regressionHandler.core.SurrogateModelBase import SurrogateModelBase
 from pythonLibs.regressionHandler.kernels.Kernels import buildKernel
+from pythonLibs.regressionHandler.models.KrigingModel import _jitteredCholesky
 from pythonLibs.regressionHandler.numerics.LinearAlgebra import solveTriangular
 from pythonLibs.regressionHandler.numerics.Optimizers import minimize, multiStart
 from pythonLibs.regressionHandler.sampling.Sampling import latinHypercube
@@ -209,6 +210,7 @@ class CokrigingModel(SurrogateModelBase):
         c, grads = self._covariance(p, True)
         y, f = self._yObs, self._F
         n, q = f.shape
+        c[np.diag_indices(n)] += getattr(self, "_likelihoodJitter", 0.0)
         try:
             chol = np.linalg.cholesky(c)
         except np.linalg.LinAlgError:
@@ -240,6 +242,7 @@ class CokrigingModel(SurrogateModelBase):
     # ------------------------------------------------------------------ training
     def _train(self) -> None:
         self._prepare()
+        self._likelihoodJitter = 0.0
         fixed = self.options["hyperparameters"]
         if fixed is not None:
             p = np.asarray(fixed, dtype=float)
@@ -260,10 +263,18 @@ class CokrigingModel(SurrogateModelBase):
                     for (_, ls) in layout:           # keep the coregionalization start, perturb it mildly
                         s[ls] = p0[ls] * (1.0 + 0.3 * rng.standard_normal(ls.stop - ls.start))
                     starts.append(s)
-            self._optResult = multiStart(
-                lambda s: minimize(self._negLogLikelihood, s, jac=True, bounds=[tuple(b) for b in bounds],
-                                   maxIter=self.options["maxIter"], tol=1e-7),
-                np.array(starts))
+            def optimize():
+                return multiStart(
+                    lambda s: minimize(self._negLogLikelihood, s, jac=True, bounds=[tuple(b) for b in bounds],
+                                       maxIter=self.options["maxIter"], tol=1e-7),
+                    np.array(starts))
+
+            self._optResult = optimize()
+            if self._optResult.fun >= 1e20:
+                # C is singular at every start (e.g. duplicated inputs with a zero nugget), so no likelihood
+                # was ever evaluated: optimize that of the jitter-regularized C the factorization uses anyway.
+                _, self._likelihoodJitter = _jitteredCholesky(self._covariance(p0, False)[0])
+                self._optResult = optimize()
             p = self._optResult.x
         self._factorize(p)
 
@@ -271,15 +282,9 @@ class CokrigingModel(SurrogateModelBase):
         self._params = np.asarray(p, dtype=float)
         c, _ = self._covariance(self._params, False)
         n = c.shape[0]
-        jitter = 0.0
-        while True:
-            try:
-                self._chol = np.linalg.cholesky(c + jitter * np.eye(n))
-                break
-            except np.linalg.LinAlgError:
-                jitter = 1e-10 if jitter == 0.0 else jitter * 10.0
-                if jitter > 1e-2:
-                    raise
+        self._chol, jitter = _jitteredCholesky(c)
+        # the reported likelihood refers to the matrix actually factorized
+        self._likelihoodJitter = jitter
         f, y = self._F, self._yObs
         q = f.shape[1]
         self._lf = solveTriangular(self._chol, f, lower=True) if q else np.zeros((n, 0))
@@ -293,7 +298,12 @@ class CokrigingModel(SurrogateModelBase):
         resid = y - f @ self._beta
         self._alpha = solveTriangular(self._chol, solveTriangular(self._chol, resid, lower=True), lower=True,
                                       trans=True)
-        self._logLik = -float(self._negLogLikelihood(self._params)[0])
+        # The likelihood is evaluated on the standardized outputs; the Jacobian of y_a -> y_a / yStd_a
+        # puts it on the raw output scale (REML: n_a - p contrasts per output, as for KrigingModel).
+        nObs = np.bincount(self._oa, minlength=self.ny)
+        if self.options["likelihood"] == "reml":
+            nObs = nObs - (self._poly.nTerms if self._poly is not None else 0)
+        self._logLik = -float(self._negLogLikelihood(self._params)[0]) - float(np.sum(nObs * np.log(self._yStd)))
 
     # ------------------------------------------------------------------ prediction
     def _scaled(self, x):

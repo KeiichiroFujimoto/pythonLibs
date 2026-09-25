@@ -95,7 +95,9 @@ class RidgeSolver(LinearSolverBase):
     """Penalized least squares ``min |W^1/2 (y - Phi c)|^2 + alpha c^T P c``.
 
     ``penalty="ridge"``: P is diagonal with the (weighted) column variances,
-    intercept excluded, so alpha is scale free. ``penalty="smoothness"``: P
+    intercept excluded, so alpha is scale free. ``penalty="identity"``: P = I
+    on all but the intercept (alpha in the units of the raw columns, the
+    scikit-learn ``Ridge`` convention). ``penalty="smoothness"``: P
     is the basis roughness penalty (P-splines), normalized to the Gram trace.
     ``alpha="gcv"`` / ``"loo"`` minimizes generalized / exact leave-one-out
     cross-validation over log10(alpha) in ``alphaRange`` (grid + Brent).
@@ -109,7 +111,7 @@ class RidgeSolver(LinearSolverBase):
     def _declareOptions(self, declare) -> None:
         declare("alpha", "gcv", values=("gcv", "loo"), types=(int, float),
                 desc="Penalty weight (>= 0) or 'gcv' / 'loo' for automatic selection")
-        declare("penalty", "ridge", values=("ridge", "smoothness"), desc="Penalty matrix type")
+        declare("penalty", "ridge", values=("ridge", "identity", "smoothness"), desc="Penalty matrix type")
         declare("alphaRange", [-10.0, 6.0], types=list, desc="log10(alpha) search interval")
 
     def solve(self, phi, y, w, penalty, biasMask) -> SolveResult:
@@ -156,6 +158,8 @@ class RidgeSolver(LinearSolverBase):
                 raise ValueError("penalty='smoothness' needs a basis with a roughness penalty (e.g. bspline)")
             tr = np.trace(penalty)
             return penalty * (np.trace(gram) / tr if tr > 0 else 1.0)
+        if self.options["penalty"] == "identity":
+            return np.diag(np.where(biasMask, 0.0, 1.0))
         wn = w / w.sum()
         mean = wn @ phi
         var = wn @ (phi - mean) ** 2
@@ -198,8 +202,9 @@ def _splitIntercept(phi, biasMask):
 class ElasticNetSolver(LinearSolverBase):
     """``min 1/(2 sum w) |W^1/2 (y - Phi c)|^2 + alpha (l1Ratio |c|_1 + (1-l1Ratio)/2 |c|^2)``.
 
-    Columns are standardized internally (weighted), the intercept is left
-    unpenalized, and coordinate descent runs on the Gram matrix (O(p^2) per
+    Columns are standardized internally (weighted; ``standardize=False`` keeps
+    the raw column scale, the scikit-learn ``ElasticNet`` / ``Lasso``
+    convention), the intercept is left unpenalized, and coordinate descent runs on the Gram matrix (O(p^2) per
     sweep) with the usual (alpha, l1Ratio) parameterization. ``l1Ratio=1`` is
     the Lasso. No covariance is reported (post-selection inference is not
     valid); refit the selected terms with ``ols`` for intervals.
@@ -210,6 +215,7 @@ class ElasticNetSolver(LinearSolverBase):
         declare("l1Ratio", 1.0, types=(int, float), lower=0.0, upper=1.0, desc="L1 share (1 = Lasso)")
         declare("maxIter", 5000, types=int, lower=1, desc="Maximum coordinate-descent sweeps")
         declare("tol", 1e-9, types=float, lower=0.0, desc="Convergence tolerance on coefficient change")
+        declare("standardize", True, types=bool, desc="Penalize standardized (True) or raw (False) coefficients")
 
     def solve(self, phi, y, w, penalty, biasMask) -> SolveResult:
         n, p = phi.shape
@@ -225,7 +231,7 @@ class ElasticNetSolver(LinearSolverBase):
             xMean = np.zeros(x.shape[1])
             yMean = np.zeros(ny)
         xc = x - xMean
-        scale = np.sqrt(wn @ (xc * xc))
+        scale = np.sqrt(wn @ (xc * xc)) if self.options["standardize"] else np.ones(xc.shape[1])
         scale[scale == 0.0] = 1.0
         xs = xc / scale
         gram = xs.T @ (xs * wn[:, None])

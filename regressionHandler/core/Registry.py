@@ -15,6 +15,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable, ClassVar, Dict, Type
 
+import numpy as np
+
 from pythonLibs.regressionHandler.core.OptionsDictionary import OptionsDictionary
 
 
@@ -123,6 +125,19 @@ def buildComponent(kind: str, spec: Any) -> ComponentBase:
     raise TypeError(f"cannot build a {kind} from {type(spec).__name__}")
 
 
+def _plainValue(v):
+    """numpy arrays / scalars (also inside lists and dicts) as JSON-ready Python values."""
+    if isinstance(v, np.ndarray):
+        return v.tolist()
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, (list, tuple)):
+        return type(v)(_plainValue(e) for e in v)
+    if isinstance(v, dict):
+        return {k: _plainValue(e) for k, e in v.items()}
+    return v
+
+
 def _optionsToDict(values: dict) -> dict:
     out = {}
     for k, v in values.items():
@@ -131,7 +146,7 @@ def _optionsToDict(values: dict) -> dict:
         elif isinstance(v, (list, tuple)) and v and all(isinstance(e, ComponentBase) for e in v):
             out[k] = [{"__component__": e.componentKind, **e.toDict()} for e in v]
         else:
-            out[k] = v
+            out[k] = _plainValue(v)
     return out
 
 

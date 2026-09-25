@@ -175,7 +175,18 @@ class TransformedTargetModel(SurrogateModelBase):
 
     def _predictDerivatives(self, x: np.ndarray, kx: int) -> np.ndarray:
         z = self._model.predictValues(x)[:, 0]
-        return (self._dInv(z, self._lambda) * self._model.predictDerivatives(x, kx)[:, 0])[:, None]
+        return (self._dBackMean(z) * self._model.predictDerivatives(x, kx)[:, 0])[:, None]
+
+    def _dBackMean(self, z):
+        """d(back-transformed prediction) / d zhat, consistent with ``retransform``."""
+        if self.options["retransform"] == "median":
+            return self._dInv(z, self._lambda)
+        # smearing estimate: d/dz mean_j T^-1(z + e_j) = mean_j (T^-1)'(z + e_j)
+        out = np.empty_like(z)
+        for s in range(0, z.size, 2048):
+            zz = z[s:s + 2048, None] + self._resid[None, :]
+            out[s:s + 2048] = np.mean(self._dInv(zz.ravel(), self._lambda).reshape(zz.shape), axis=1)
+        return out
 
     def _effectiveParams(self):
         estimated = self.options["transform"] in ("boxcox", "yeoJohnson") and self.options["lambda"] == "auto"
@@ -199,3 +210,4 @@ class TransformedTargetModel(SurrogateModelBase):
         self._model = SurrogateModelBase.fromDict(state["model"])
         self._resid = np.array(state["resid"], dtype=float)
         self._profileLogLik = float(state["profileLogLik"])
+        self.supports["variances"] = bool(self._model.supports.get("variances"))

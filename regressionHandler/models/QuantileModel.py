@@ -212,6 +212,12 @@ class QuantileModel(SurrogateModelBase):
             dq = phi @ (bHi - bLo)
             f = np.maximum(0.0, (hi - lo) / (dq - eps))
         hmat = (phi * (w * f)[:, None]).T @ phi
+        if np.linalg.matrix_rank(hmat) < np.linalg.matrix_rank(xtx):
+            # too few points with a positive density estimate (e.g. nid at an extreme tau, where the
+            # fits at tau +/- h coincide): the sandwich would silently return zero standard errors
+            self._info["seWarning"] = (f"se='{method}': the local density estimate is degenerate "
+                                       "(tau too extreme for this sample size); standard errors are undefined")
+            return np.full((p, p), np.nan)
         hinv = np.linalg.pinv(hmat)
         return tau * (1.0 - tau) * hinv @ xtx @ hinv
 

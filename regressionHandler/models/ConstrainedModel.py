@@ -40,7 +40,7 @@ from typing import Optional
 
 import numpy as np
 
-from pythonLibs.regressionHandler.constraints.Functionals import buildConstraints, expand
+from pythonLibs.regressionHandler.constraints.Functionals import LinearConstraint, buildConstraints, expand
 from pythonLibs.regressionHandler.constraints.QuadraticProgramming import boundedQp
 from pythonLibs.regressionHandler.core.FitResult import FitResult
 from pythonLibs.regressionHandler.core.Registry import registry
@@ -53,6 +53,21 @@ def _pinvSym(a: np.ndarray, rtol: float = 1e-12) -> np.ndarray:
     w, v = np.linalg.eigh(0.5 * (a + a.T))
     keep = w > rtol * max(float(w.max()) if w.size else 0.0, 1e-300)
     return (v[:, keep] / w[keep]) @ v[:, keep].T
+
+
+def _jsonSpec(value):
+    """Constraint spec with numpy arrays / scalars and LinearConstraint objects as plain JSON values."""
+    if isinstance(value, LinearConstraint):
+        return value.toDict()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {k: _jsonSpec(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonSpec(v) for v in value]
+    return value
 
 
 @registry("model").register("constrained")
@@ -74,6 +89,9 @@ class ConstrainedModel(SurrogateModelBase):
 
     def _validateOptions(self) -> None:
         buildConstraints(self.options["constraints"])
+        # keep the specs JSON-compatible (points given as numpy arrays, LinearConstraint objects),
+        # otherwise the model cannot be saved
+        self.options["constraints"] = [_jsonSpec(s) for s in self.options["constraints"]]
 
     # ------------------------------------------------------------------ training
     def _train(self) -> None:

@@ -11,6 +11,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Iterable, Optional
 
+import numpy as np
+
 
 class OptionsDictionary:
 
@@ -74,6 +76,10 @@ class OptionsDictionary:
         return self._values[name]
 
     def __setitem__(self, name: str, value: Any) -> None:
+        # numpy scalars (np.int64 from np.arange grids, np.str_, np.bool_) are stored as the equivalent
+        # Python values, which the type checks and JSON persistence expect
+        if isinstance(value, np.generic):
+            value = value.item()
         self._validate(name, value)
         self._values[name] = value
 
