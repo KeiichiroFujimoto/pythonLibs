@@ -56,7 +56,9 @@ class FitResult:
     def tValues(self) -> np.ndarray:
         se = self.stdErrors
         with np.errstate(divide="ignore", invalid="ignore"):
-            return np.where(se > 0, self.params / se, np.inf * np.sign(self.params))
+            # An undefined (NaN) standard error gives an undefined t, not +-inf.
+            t = np.where(se > 0, self.params / se, np.inf * np.sign(self.params))
+            return np.where(np.isnan(se), np.nan, t)
 
     @property
     def pValues(self) -> np.ndarray:
@@ -65,6 +67,7 @@ class FitResult:
         out = np.zeros_like(t)
         finite = np.isfinite(t)
         out[finite] = 2.0 * np.asarray(dist.sf(t[finite]))
+        out[np.isnan(t)] = np.nan
         return out
 
     def confInt(self, level: float = 0.95) -> tuple[np.ndarray, np.ndarray]:

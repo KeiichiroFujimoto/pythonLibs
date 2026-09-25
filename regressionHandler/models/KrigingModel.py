@@ -75,6 +75,19 @@ def _independentColumns(f: np.ndarray, rtol: float = 1e-10) -> np.ndarray:
     return np.array(keep, dtype=int)
 
 
+def _jitteredCholesky(r: np.ndarray) -> tuple[np.ndarray, float]:
+    """Cholesky factor of r + jitter I with the smallest jitter in 0, 1e-10, 1e-9, ... 1e-2 that succeeds."""
+    n = r.shape[0]
+    jitter = 0.0
+    while True:
+        try:
+            return np.linalg.cholesky(r + jitter * np.eye(n)), jitter
+        except np.linalg.LinAlgError:
+            jitter = 1e-10 if jitter == 0.0 else jitter * 10.0
+            if jitter > 1e-2:
+                raise
+
+
 @registry("model").register("kriging")
 class KrigingModel(SurrogateModelBase):
     """Universal Kriging / GP regression with estimated noise (KPLS with plsComponents)."""
@@ -228,6 +241,7 @@ class KrigingModel(SurrogateModelBase):
     def _train(self) -> None:
         self._prepare()
         self._cache = self._kernel.trainingCache(self._xs[:, self._sc])
+        self._likelihoodJitter = 0.0
         nk = self._kernel.nParams()
         fixed = self.options["hyperparameters"]
         if fixed is not None:
@@ -254,10 +268,21 @@ class KrigingModel(SurrogateModelBase):
                                              seed=self.options["seed"]))
             boundPairs = [tuple(b) for b in bounds]
             objective, jac = self._objective()
-            self._optResult = multiStart(
-                lambda s: minimize(objective, s, jac=jac, bounds=boundPairs, maxIter=self.options["maxIter"],
-                                   tol=1e-6),
-                np.array(starts))
+
+            def optimize():
+                return multiStart(
+                    lambda s: minimize(objective, s, jac=jac, bounds=boundPairs, maxIter=self.options["maxIter"],
+                                       tol=1e-6),
+                    np.array(starts))
+
+            self._optResult = optimize()
+            if self._optResult.fun >= 1e20:
+                # R is singular at every start (e.g. duplicated inputs with a zero nugget), so no likelihood
+                # was ever evaluated: optimize that of the jitter-regularized R the factorization uses anyway.
+                kp0, eta0 = self._split(p0)
+                x0 = self._xs[:, self._sc]
+                _, self._likelihoodJitter = _jitteredCholesky(self._kernel.matrix(x0, x0, kp0) + np.diag(eta0 / self._wn))
+                self._optResult = optimize()
             p = self._optResult.x
             if self.options["likelihood"] == "gcv" and self._autoNugget:
                 p = self._gcvNugget(p)
@@ -341,8 +366,10 @@ class KrigingModel(SurrogateModelBase):
 
     def _split(self, p):
         nk = self._kernel.nParams()
-        eta = float(np.exp(p[nk])) if self._autoNugget else float(self.options["nugget"])
-        return p[:nk], max(eta, 1e-12)
+        if self._autoNugget:
+            return p[:nk], max(float(np.exp(p[nk])), 1e-12)
+        # A fixed nugget is used as given (the Cholesky jitter still guards singular systems).
+        return p[:nk], float(self.options["nugget"])
 
     def _negLogLikelihood(self, p, criterion: Optional[str] = None):
         """Negative profile log-likelihood (REML or ML) and its gradient."""
@@ -351,7 +378,7 @@ class KrigingModel(SurrogateModelBase):
         x, y, f, wn = self._xs[:, self._sc], self._ys, self._f, self._wn
         n, q = f.shape
         k, kGrads = self._kernel.matrixAndGradients(x, kp, self._cache)
-        r = k + np.diag(eta / wn)
+        r = k + np.diag(eta / wn + getattr(self, "_likelihoodJitter", 0.0))
         try:
             chol = np.linalg.cholesky(r)
         except np.linalg.LinAlgError:
@@ -426,16 +453,10 @@ class KrigingModel(SurrogateModelBase):
         x, y, f, wn = self._xs[:, self._sc], self._ys, self._f, self._wn
         n, q = f.shape
         r = self._kernel.matrix(x, x, kp) + np.diag(eta / wn)
-        jitter = 0.0
-        while True:
-            try:
-                self._chol = np.linalg.cholesky(r + jitter * np.eye(n))
-                break
-            except np.linalg.LinAlgError:
-                jitter = 1e-10 if jitter == 0.0 else jitter * 10.0
-                if jitter > 1e-2:
-                    raise
+        self._chol, jitter = _jitteredCholesky(r)
         self._jitter = jitter
+        # the reported likelihood (and parameterIntervals) refer to the matrix actually factorized
+        self._likelihoodJitter = jitter
         lf = solveTriangular(self._chol, f, lower=True) if q else np.zeros((n, 0))
         ly = solveTriangular(self._chol, y, lower=True)
         if q:
@@ -451,8 +472,10 @@ class KrigingModel(SurrogateModelBase):
         ssr = float(resid @ self._alpha)
         dof = n - q if self.options["likelihood"] == "reml" else n
         self._sigma2 = max(ssr / dof, 1e-300)
-        # Effective dof (trace of the smoother) and GCV from the stable spectral form.
-        gcv, self._edf, _ = self._gcvFromSpectrum(self._smootherSpectrum(kp), eta)
+        # Effective dof (trace of the smoother) and GCV from the stable spectral form. A Cholesky jitter
+        # acts as extra nugget (exactly so for unit weights); without it a zero nugget on a singular
+        # kernel matrix (duplicated inputs) gives 0 / 0 here.
+        gcv, self._edf, _ = self._gcvFromSpectrum(self._smootherSpectrum(kp), eta + jitter)
         # Spatial-statistics summary on the raw output scale.
         logDetR = 2.0 * float(np.sum(np.log(np.diag(self._chol))))
         sigma2Ml = max(ssr / n, 1e-300) * self._yStd ** 2
@@ -537,6 +560,10 @@ class KrigingModel(SurrogateModelBase):
                 out["nu"] = float(np.exp(logP[i]))
             elif name == "log_nugget":
                 out["lambda"] = float(np.exp(logP[i]))
+            elif i < nk and "log_" in name:
+                # other log parameters (PLS or periodic lengthscales, periods, nested nu, L_ii ...) are
+                # reported as values in the kernel's input units, never as raw logs under a physical name
+                out[name.replace("log_", "", 1)] = float(np.exp(logP[i]))
             elif i < nk:
                 out[name] = float(logP[i])
         return out
@@ -649,6 +676,8 @@ class KrigingModel(SurrogateModelBase):
         (quadratic form / n); effective dof is the exact smoother trace.
         """
         self._checkTrained()
+        if self._subModels is not None:
+            return {"outputs": [m.spatialSummary() for m in self._subModels]}
         out = {"lambda": self._eta, "sigma2": self._sigma2Ml, "tau": float(np.sqrt(self._eta * self._sigma2Ml)),
                "effectiveDof": self._edf, "gcv": self._gcv, "logLikelihood": self._logLikelihoodProfile,
                "logRestrictedProfile": self._logRestrictedProfile, "n": int(self._xs.shape[0])}
@@ -724,6 +753,8 @@ class KrigingModel(SurrogateModelBase):
     def replicates(self) -> dict:
         """Replicated input locations and the pure-error variance they imply."""
         self._checkTrained()
+        if self._subModels is not None:
+            return {"outputs": [m.replicates() for m in self._subModels]}
         x = self.xt if self.xt is not None else self._xs * self._xStd + self._xMean
         y = self.yt[:, 0] if self.yt is not None else self._ys * self._yStd + self._yMean
         _, inverse, counts = np.unique(x, axis=0, return_inverse=True, return_counts=True)

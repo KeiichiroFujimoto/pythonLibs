@@ -64,6 +64,7 @@ def latinHypercube(nSamples: int, xlimits, criterion: str = "maximin", seed: Opt
     elif criterion == "ese":
         unit = oneDesign(False)
         bestD = _minDistance(unit) if nSamples > 1 else 0.0
+        best = unit
         threshold = 0.005 * bestD
         for _ in range(max(1, iterations) * nx * 10):
             if nSamples < 2:
@@ -75,7 +76,10 @@ def latinHypercube(nSamples: int, xlimits, criterion: str = "maximin", seed: Opt
             d = _minDistance(cand)
             if d > bestD - threshold * rng.random():
                 unit = cand
-                bestD = max(bestD, d)
+                if d > bestD:
+                    # the walk may accept slightly worse designs; the best one visited is returned
+                    best, bestD = cand, d
+        unit = best
     else:
         raise ValueError("criterion must be random, center, maximin or ese")
     return _scale(unit, lim)

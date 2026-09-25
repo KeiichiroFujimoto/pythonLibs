@@ -134,6 +134,8 @@ def test_cliFluxAndInfo(tmp_path):
 
 
 def test_cliReportsErrors(tmp_path):
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    env = dict(os.environ, PYTHONPATH=root + os.pathsep + os.environ.get("PYTHONPATH", ""))
     p = subprocess.run([sys.executable, "-m", "pythonLibs.fieldMapping", "info", str(tmp_path / "missing.vtu")],
-                       capture_output=True, text=True, cwd="/home/user")
+                       capture_output=True, text=True, cwd=str(tmp_path), env=env)
     assert p.returncode == 1 and p.stderr.startswith("error:")

@@ -30,6 +30,7 @@ from pythonLibs.regressionHandler.bases.PolynomialBasis import PolynomialBasis
 from pythonLibs.regressionHandler.core.Registry import registry
 from pythonLibs.regressionHandler.core.SurrogateModelBase import SurrogateModelBase
 from pythonLibs.regressionHandler.kernels.Kernels import StationaryKernel, buildKernel
+from pythonLibs.regressionHandler.models.KrigingModel import fullLogLikelihood
 from pythonLibs.regressionHandler.numerics.LinearAlgebra import solveTriangular
 from pythonLibs.regressionHandler.numerics.Optimizers import minimize, multiStart
 from pythonLibs.regressionHandler.sampling.Sampling import latinHypercube
@@ -206,7 +207,18 @@ class GradientKrigingModel(SurrogateModelBase):
             p = self._optResult.x
         self._params = p
         nll, self._fit = self._profile(p)
-        self._logLik = -nll
+        self._logLik = self._rawLogLikelihood(nll)
+
+    def _rawLogLikelihood(self, nll: float) -> float:
+        """Maximized (restricted) log-likelihood of the raw observations from the profiled objective.
+
+        Besides the constants and the value scaling (``fullLogLikelihood``), every
+        observed dy/dx_k was multiplied by xStd_k, which adds log(xStd_k) per gradient row.
+        """
+        n, q = self._F.shape
+        dof = n - q if self.options["likelihood"] == "reml" else n
+        grad = self._type > 0
+        return fullLogLikelihood(nll, dof, self._yStd) + float(np.sum(np.log(self._xStd[self._type[grad] - 1])))
 
     # ------------------------------------------------------------------ prediction
     def _parts(self, x, output: int, full: bool = False):
@@ -278,4 +290,4 @@ class GradientKrigingModel(SurrogateModelBase):
         self._optResult = None
         self._params = np.array(state["params"], dtype=float)
         nll, self._fit = self._profile(self._params)
-        self._logLik = -nll
+        self._logLik = self._rawLogLikelihood(nll)

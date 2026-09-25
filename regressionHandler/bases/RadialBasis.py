@@ -68,8 +68,20 @@ def rbfDerivativeOverR(kernel: str, r: np.ndarray, eps: float) -> np.ndarray:
 
 
 def pairwiseDistances(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Euclidean distance matrix via the Gram identity (BLAS-3)."""
-    d2 = np.sum(a * a, axis=1)[:, None] + np.sum(b * b, axis=1)[None, :] - 2.0 * (a @ b.T)
+    """Euclidean distance matrix via the Gram identity (BLAS-3).
+
+    Points are centred first, and entries where the identity cancels (distance small
+    against the norms) are recomputed from coordinate differences, so near and
+    coincident points get exact distances even for offset, un-normalized inputs.
+    """
+    c = b.mean(axis=0) if b.shape[0] else np.zeros(b.shape[1])
+    a, b = a - c, b - c
+    aa, bb = np.sum(a * a, axis=1), np.sum(b * b, axis=1)
+    d2 = aa[:, None] + bb[None, :] - 2.0 * (a @ b.T)
+    i, j = np.nonzero(d2 <= 1e-4 * (aa[:, None] + bb[None, :]))
+    if i.size:
+        diff = a[i] - b[j]
+        d2[i, j] = np.einsum("ij,ij->i", diff, diff)
     return np.sqrt(np.maximum(d2, 0.0))
 
 

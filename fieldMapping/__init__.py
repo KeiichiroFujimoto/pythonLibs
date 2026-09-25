@@ -8,12 +8,12 @@
 from pythonLibs.fieldMapping.io import readPvd, readVtu, writePvd, writeVtu
 from pythonLibs.fieldMapping.mesh import (Quadrature, UnstructuredMesh, planeSurface, sphereSurface, sphericalShell,
                                           structuredBox)
-from pythonLibs.fieldMapping.SurfaceFluxMapper import FluxMapResult, SurfaceFluxMapper
+from pythonLibs.fieldMapping.SurfaceFluxMapper import FieldBackResult, FluxMapResult, SurfaceFluxMapper
 from pythonLibs.fieldMapping.LayeredProfileMapper import LayeredMapResult, LayeredProfileMapper, Station
 from pythonLibs.fieldMapping.Material import Material
 from pythonLibs.fieldMapping.StationIO import loadMaterials, loadStations, readProfileCsv, writeStationTemplate
 from pythonLibs.fieldMapping.FieldMappingHandler import FieldMappingHandler
 
 __all__ = ["FieldMappingHandler", "LayeredProfileMapper", "LayeredMapResult", "Station", "Material", "UnstructuredMesh", "Quadrature", "readVtu", "writeVtu", "readPvd", "writePvd", "SurfaceFluxMapper",
-           "FluxMapResult", "structuredBox", "planeSurface", "sphereSurface", "sphericalShell", "loadStations", "loadMaterials",
+           "FluxMapResult", "FieldBackResult", "structuredBox", "planeSurface", "sphereSurface", "sphericalShell", "loadStations", "loadMaterials",
            "readProfileCsv", "writeStationTemplate"]

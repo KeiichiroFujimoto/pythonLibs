@@ -38,6 +38,7 @@ fieldMapping/
   Geometry.py             box pair search, polygon clipping, closest points
   SurfaceFluxMapper.py    conservative, sign-preserving surface flux transfer
   LayeredProfileMapper.py layered 1-D profiles -> 3-D temperatures with energy conservation
+  Coupling.py             FixedPointRelaxation: partitioned coupling iteration (constant / Aitken)
   Material.py             density and cp(T) with exact energy integrals
   StationIO.py            station manifest / CSV tables, materials JSON, example templates
   __main__.py             command line: info, template, layered, flux
@@ -102,6 +103,26 @@ res.attach(mapper.target)                   # cell flux, heat in / out, nodal lo
   sum_i a_i q_i equals the heat (incoming and outgoing parts separately with sign
   bounds, optional per-group heat constraints)
 - the overlap geometry is computed once; `map` can be called for every time step
+
+### Reverse direction and coupling iteration
+
+```python
+back = mapper.mapBack(structureWallT, "point")   # intensive field target -> source (same pieces)
+back.pointValues, back.cellValues, back.cellCoverage, back.diagnostics
+
+from pythonLibs.fieldMapping.Coupling import FixedPointRelaxation
+relax = FixedPointRelaxation(omega=0.5, aitken=True, tolerance=1.0)
+x, done = relax.update(x, F(x))                  # NaN entries (off the interface) are left alone
+```
+
+- `mapBack`: every source cell gets the overlap-area weighted mean of the target facet
+  values (point input is reduced to facet means with the target quadrature); source nodes
+  the covered-area weighted mean of their cells. The overlap integral is conserved to
+  round-off, no new extrema; uncovered cells / nodes get `fill` (NaN). `pointCoverage` is
+  the covered share of each node's support: a node on the edge of a target patch takes the
+  value of the covered part, a nearby location, so compare or trust only nodes near 1
+- `FixedPointRelaxation`: x <- x + w (F(x) - x), w constant or Aitken (Irons-Tuck),
+  clipped to [omegaMin, omegaMax]; the per-iteration residuals are in `history`
 
 ## Energy-conserving mapping of layered 1-D profiles
 

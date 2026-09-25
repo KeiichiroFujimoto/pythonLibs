@@ -102,6 +102,10 @@ class MixedModel(SurrogateModelBase):
     # ------------------------------------------------------------------ training
     def _train(self) -> None:
         x, y = self.xt, self.yt[:, 0]
+        # negative indices count from the end; anything outside [-nx, nx) would silently wrap around
+        for c in [self.options["groupColumn"]] + [int(c) for c in self.options["randomSlopes"]]:
+            if not -self.nx <= c < self.nx:
+                raise ValueError(f"column index {c} is out of range for {self.nx} inputs")
         groups = x[:, self._gc()]
         self._levels, gidx = np.unique(groups, return_inverse=True)
         gidx = gidx.ravel()

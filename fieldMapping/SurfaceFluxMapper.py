@@ -47,6 +47,13 @@ Outputs (``FluxMapResult``):
 
 The geometric part (pairs and pieces) is built once; ``map`` is cheap and can
 be called for every time step of a transient flux.
+
+Reverse direction (two-way coupling). ``mapBack`` carries an *intensive* field
+(e.g. the wall temperature the structure computed) from the target back to the
+source through the same pieces: every source cell gets the overlap-area weighted
+mean of the target values, so the area integral over the overlap is conserved
+(sum_s A_s^cov T_s = sum_pieces A_p T_t) and no new extrema appear. Source cells
+or nodes the target does not cover get ``fill`` (NaN by default).
 """
 from __future__ import annotations
 
@@ -60,6 +67,46 @@ from pythonLibs.fieldMapping.Geometry import (boxPairs, clipHalfPlane, clipPolyg
 from pythonLibs.fieldMapping.mesh.Mesh import UnstructuredMesh
 from pythonLibs.regressionHandler.constraints.Projection import projectAffine
 from pythonLibs.regressionHandler.numerics.Sparse import SparseMatrix
+
+
+def _diagonal(m: SparseMatrix) -> np.ndarray:
+    d = np.zeros(m.shape[0])
+    on = m.row == m.col
+    np.add.at(d, m.row[on], m.data[on])
+    return d
+
+
+def _spmm(a: SparseMatrix, b: SparseMatrix) -> SparseMatrix:
+    """Sparse product a @ b (coordinate join; duplicates summed by SparseMatrix)."""
+    order = np.argsort(b.row, kind="stable")
+    br, bc, bd = b.row[order], b.col[order], b.data[order]
+    start = np.searchsorted(br, np.arange(b.shape[0] + 1))
+    rep = np.diff(start)[a.col]
+    ia = np.repeat(np.arange(a.data.size), rep)
+    jb = start[a.col][ia] + (np.arange(ia.size) - np.repeat(np.cumsum(rep) - rep, rep))
+    return SparseMatrix(a.row[ia], bc[jb], a.data[ia] * bd[jb], (a.shape[0], b.shape[1]))
+
+
+def _pcg(m: SparseMatrix, b: np.ndarray, diag: np.ndarray, tol: float = 1e-13, maxIter: int = 2000):
+    """Jacobi-preconditioned conjugate gradients for an SPD sparse matrix (mass matrices)."""
+    x = b / np.where(diag > 0, diag, 1.0)
+    r = b - m @ x
+    z = r / np.where(diag > 0, diag, 1.0)
+    p = z.copy()
+    rz = float(r @ z)
+    norm = max(float(np.linalg.norm(b)), 1e-300)
+    for k in range(maxIter):
+        if np.linalg.norm(r) <= tol * norm:
+            return x, k, float(np.linalg.norm(r) / norm)
+        mp = m @ p
+        alpha = rz / float(p @ mp)
+        x += alpha * p
+        r -= alpha * mp
+        z = r / np.where(diag > 0, diag, 1.0)
+        rzNew = float(r @ z)
+        p = z + (rzNew / rz) * p
+        rz = rzNew
+    return x, maxIter, float(np.linalg.norm(r) / norm)
 
 
 def _linearIntegral(poly, count, vals):
@@ -197,6 +244,17 @@ class FluxMapResult:
         return mesh
 
 
+@dataclass
+class FieldBackResult:
+    """Intensive target field carried back onto the source surface (``SurfaceFluxMapper.mapBack``)."""
+    cellValues: np.ndarray            # per source cell (fill where uncovered)
+    pointValues: np.ndarray           # per source point (fill where no adjacent covered cell)
+    cellCoverage: np.ndarray          # covered fraction of each source cell's area (0..1)
+    diagnostics: dict = field(default_factory=dict)
+    pointCoverage: Optional[np.ndarray] = None   # covered share of each source point's support (0..1):
+                                                 # below 1 the point value comes from part of its support only
+
+
 class SurfaceFluxMapper:
     """Conservative, sign-preserving surface flux transfer (see the module docstring).
 
@@ -246,7 +304,8 @@ class SurfaceFluxMapper:
         self._order = order
         # flat sub-triangles (centroid fans for quads / polygons)
         sx, sPar, sV = facetSubTriangles(source)
-        tx, tPar, _ = facetSubTriangles(surf, np.flatnonzero(mask))
+        tx, tPar, tV = facetSubTriangles(surf, np.flatnonzero(mask))
+        self._tx, self._tV = tx, tV
         self._sx, self._sPar, self._sV = sx, sPar, sV
         self._tPar = tPar
         _, _, _, sN, sA = triangleFrames(sx)
@@ -288,7 +347,7 @@ class SurfaceFluxMapper:
             poly, cnt, att = clipPolygons(sub, np.full(ii.size, 3), bary, clip)
             area, _ = _linearIntegral(poly, cnt, np.ones(poly.shape[:2]))
             keep = (cnt >= 3) & (area > 1e-14 * np.maximum(sA[ii], tA[jj]))
-            pieces.append((ii[keep], tPar[jj[keep]], poly[keep], cnt[keep], att[keep], area[keep]))
+            pieces.append((ii[keep], tPar[jj[keep]], poly[keep], cnt[keep], att[keep], area[keep], jj[keep]))
         cat = lambda k, shape: np.concatenate([p[k] for p in pieces]) if pieces else np.zeros(shape)   # noqa: E731
         self._pSrc = cat(0, (0,)).astype(np.int64)
         self._pTgt = cat(1, (0,)).astype(np.int64)
@@ -296,6 +355,7 @@ class SurfaceFluxMapper:
         self._pCnt = cat(3, (0,)).astype(np.int64)
         self._pBary = cat(4, (0, 6, 3))
         self._pArea = cat(5, (0,))
+        self._pTsub = cat(6, (0,)).astype(np.int64)
         # nearest target facet for every source triangle (fallback for gaps)
         self._nearest = self._nearestTarget(sx, tx, tPar, tol)
         # target quadrature (areas, loads)
@@ -403,7 +463,7 @@ class SurfaceFluxMapper:
 
     # ------------------------------------------------------------------ mapping
     def map(self, values, location: str = "cell", reconstruction: str = "constant", pointFlux: bool = False,
-            groups=None) -> FluxMapResult:
+            groups=None, sourceCoverage: str = "renormalize") -> FluxMapResult:
         """Map one flux field; see the module docstring.
 
         Args:
@@ -414,7 +474,17 @@ class SurfaceFluxMapper:
             pointFlux:       also compute conservative nodal flux values
             groups:          optional label per target surface cell: the nodal flux
                              conserves the heat of every group separately
+            sourceCoverage:  "renormalize" (default): a source triangle's whole heat goes to
+                             the target pieces it overlaps — right when the target covers the
+                             source and only thin gaps (curvature, boundaries) are missing.
+                             "clip": only the part of its heat lying over the target moves;
+                             the rest is reported as dropped — right when the target is a
+                             patch of a larger source (a panel of a vehicle surface), where
+                             renormalizing would pile a straddling triangle's heat onto the
+                             patch edge. Identical to "renormalize" where coverage >= 1.
         """
+        if sourceCoverage not in ("renormalize", "clip"):
+            raise ValueError("sourceCoverage must be 'renormalize' or 'clip'")
         qv = self._vertexValues(values, location, reconstruction)            # (nS, 3)
         ref = np.tile(np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]), (qv.shape[0], 1, 1))
         fp, fm = _signedParts(ref, np.full(qv.shape[0], 3), qv)
@@ -428,14 +498,28 @@ class SurfaceFluxMapper:
         sPlus = np.bincount(self._pSrc, weights=iPlus, minlength=nS)
         sMinus = np.bincount(self._pSrc, weights=iMinus, minlength=nS)
         nT = self.target.nCells
+        overlapPlus, overlapMinus = sPlus, sMinus          # before any clip scaling (orphan test below)
+        clippedPlus = clippedMinus = 0.0
+        if sourceCoverage == "clip":
+            # the physical integral of each source sub-triangle's positive / negative part: a
+            # piece takes iPlus / max(overlap total, whole triangle), so a partly covered
+            # triangle moves only its covered fraction (the remainder is dropped)
+            fullPlus, fullMinus = fp * 2.0 * self._sArea, fm * 2.0 * self._sArea
+            sPlus, sMinus = np.maximum(sPlus, fullPlus), np.minimum(sMinus, fullMinus)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                fracPlus = np.where(sPlus > 0, np.bincount(self._pSrc, weights=iPlus, minlength=nS) / sPlus, 0.0)
+                fracMinus = np.where(sMinus < 0, np.bincount(self._pSrc, weights=iMinus, minlength=nS) / sMinus, 0.0)
+            covered = np.bincount(self._pSrc, minlength=nS) > 0
+            clippedPlus = float((qPlus * (1.0 - fracPlus))[covered].sum())
+            clippedMinus = float((qMinus * (1.0 - fracMinus))[covered].sum())
         with np.errstate(invalid="ignore", divide="ignore"):
             wPlus = np.where(sPlus[self._pSrc] > 0, iPlus / sPlus[self._pSrc], 0.0)
             wMinus = np.where(sMinus[self._pSrc] < 0, iMinus / sMinus[self._pSrc], 0.0)
         heatPlus = np.bincount(self._pTgt, weights=qPlus[self._pSrc] * wPlus, minlength=nT)
         heatMinus = np.bincount(self._pTgt, weights=qMinus[self._pSrc] * wMinus, minlength=nT)
         # source triangles whose part found no overlap
-        orphanP = (qPlus > 0) & (sPlus <= 0)
-        orphanM = (qMinus < 0) & (sMinus >= 0)
+        orphanP = (qPlus > 0) & (overlapPlus <= 0)
+        orphanM = (qMinus < 0) & (overlapMinus >= 0)
         near = self._nearest
         assign = near >= 0
         droppedPlus = droppedMinus = 0.0
@@ -450,6 +534,8 @@ class SurfaceFluxMapper:
                 droppedPlus = lost
             else:
                 droppedMinus = lost
+        droppedPlus += clippedPlus
+        droppedMinus += clippedMinus
         area = self.targetFaceAreas
         heat = heatPlus + heatMinus
         cellFlux = np.where(area > 0, heat / np.where(area > 0, area, 1.0), 0.0)
@@ -477,6 +563,147 @@ class SurfaceFluxMapper:
         if pf is not None:
             diag["pointFluxHeat"] = float((self._nodalRows(np.zeros(self.target.nCells, int)) @ pf)[0])
         return FluxMapResult(cellFlux, heatPlus, heatMinus, loads, pf, diag)
+
+    def mapBack(self, values, location: str = "cell", fill: float = np.nan, nodal: str = "average",
+                minSupport: float = 0.05) -> FieldBackResult:
+        """Carry an intensive target field (temperature, pressure, ...) back to the source surface.
+
+        Args:
+            values:   per target surface cell ("cell") or per target point ("point"; reduced to
+                      facet means with the target quadrature)
+            location: "cell" or "point"
+            fill:     value for source cells / points the target does not cover
+            nodal:    source point values: "average" (covered-area weighted mean of the adjacent
+                      cells: bounded, first order - smooths peaks) or "projection" (L2 projection
+                      onto the source's linear elements over the covered area: reproduces linear
+                      fields exactly, second order; point input is integrated exactly on the pieces)
+            minSupport: "projection" only: nodes whose covered share of their element support is
+                      below this fraction (ill-conditioned at patch edges) keep the "average" value
+
+        Every source cell gets the overlap-area weighted mean of the target facet values over its
+        pieces of the common refinement; every source point the covered-area weighted mean of its
+        adjacent cells (weights A_cov / n per cell and node). The integral over the overlap is
+        conserved to round-off and the result stays within the target's range. ``pointCoverage`` is the
+        covered share of each point's support: a point on the edge of (or outside) a target patch gets
+        the value of the part that is covered, i.e. of a nearby location, not its own.
+        """
+        if nodal not in ("average", "projection"):
+            raise ValueError("nodal must be 'average' or 'projection'")
+        v = np.asarray(values, dtype=float).ravel()
+        pointInput = v.copy() if location == "point" else None
+        if location == "point":
+            if v.size != self.target.nPoints:
+                raise ValueError(f"point values need {self.target.nPoints} entries")
+            tq = self._tq
+            fe = np.where(self.targetAreas > 0, self.targetAreas, 1.0)
+            v = np.bincount(tq.cell, weights=tq.weight * (tq.interp @ v), minlength=self.target.nCells) / fe
+        elif location == "cell":
+            if v.size != self.target.nCells:
+                raise ValueError(f"cell values need {self.target.nCells} entries")
+        else:
+            raise ValueError("location must be 'cell' or 'point'")
+        src = self.source
+        nC = src.nCells
+        cellOfPiece = self._sPar[self._pSrc]
+        covArea = np.bincount(cellOfPiece, weights=self._pArea, minlength=nC)
+        integral = np.bincount(cellOfPiece, weights=self._pArea * v[self._pTgt], minlength=nC)
+        subArea = np.bincount(self._sPar, weights=self._sArea, minlength=nC)
+        covered = covArea > 0
+        cellValues = np.full(nC, float(fill))
+        cellValues[covered] = integral[covered] / covArea[covered]
+        coverage = np.where(subArea > 0, np.minimum(covArea / np.where(subArea > 0, subArea, 1.0), 1.0), 0.0)
+        # nodes: covered-area weighted mean of the adjacent covered cells
+        sizes = src.offsets[1:] - src.offsets[:-1]
+        cellOfEntry = np.repeat(np.arange(nC), sizes)
+        node = src.connectivity                                          # offsets[0] = 0: entries in cell order
+        w = (covArea / np.maximum(sizes, 1))[cellOfEntry]
+        num = np.bincount(node, weights=w * np.where(covered, cellValues, 0.0)[cellOfEntry], minlength=src.nPoints)
+        den = np.bincount(node, weights=w, minlength=src.nPoints)
+        pointValues = np.full(src.nPoints, float(fill))
+        pointValues[den > 0] = num[den > 0] / den[den > 0]
+        support = np.bincount(node, weights=(subArea / np.maximum(sizes, 1))[cellOfEntry], minlength=src.nPoints)
+        pointCoverage = np.where(support > 0, np.minimum(den / np.where(support > 0, support, 1.0), 1.0), 0.0)
+        pieceIntegral = float(np.sum(self._pArea * v[self._pTgt]))
+        sourceIntegral = float(np.sum(covArea[covered] * cellValues[covered]))
+        diag = {"coveredSourceCells": int(covered.sum()), "coveredSourcePoints": int((den > 0).sum()),
+                "overlapArea": float(covArea.sum()), "overlapIntegral": pieceIntegral,
+                "relativeIntegralError": (sourceIntegral - pieceIntegral) / max(abs(pieceIntegral), 1e-300),
+                "targetRange": [float(v[self._targetMask].min()), float(v[self._targetMask].max())]
+                if self._targetMask.any() else [float("nan")] * 2}
+        if nodal == "projection":
+            projected, info = self._projectBack(v, pointInput, fill, minSupport)
+            thin = np.isfinite(pointValues) & ~np.isfinite(projected)
+            pointValues = np.where(thin, pointValues, projected)       # thin support: the bounded average
+            diag.update(info)
+        return FieldBackResult(cellValues, pointValues, coverage, diag, pointCoverage)
+
+    def _pieceFans(self):
+        """Fan triangles of the pieces: (piece id, vertex slots (F, 3), areas (F,))."""
+        P, V = self._pPoly.shape[:2]
+        k = np.arange(V - 2)
+        valid = k[None, :] < (self._pCnt[:, None] - 2)
+        piece, kk = np.nonzero(valid)
+        slots = np.column_stack([np.zeros_like(kk), kk + 1, kk + 2])
+        pts = self._pPoly[piece[:, None], slots]                              # (F, 3, 2)
+        a, b = pts[:, 1] - pts[:, 0], pts[:, 2] - pts[:, 0]
+        return piece, slots, 0.5 * np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
+
+    def _targetAtPieceVertices(self, pointInput):
+        """Linear target field at every piece polygon vertex (from the target sub-triangle)."""
+        tV = (self._tV @ pointInput).reshape(-1, 3)[self._pTsub]              # (P, 3)
+        to, te1, te2, _, _ = triangleFrames(self._tx[self._pTsub])
+        rel = self._tx[self._pTsub] - to[:, None, :]
+        tri = np.stack([np.einsum("pvd,pd->pv", rel, te1), np.einsum("pvd,pd->pv", rel, te2)], axis=2)   # (P, 3, 2)
+        A, B, C = tri[:, 0], tri[:, 1], tri[:, 2]
+        det = (B[:, 0] - A[:, 0]) * (C[:, 1] - A[:, 1]) - (B[:, 1] - A[:, 1]) * (C[:, 0] - A[:, 0])
+        d = self._pPoly - A[:, None, :]
+        l1 = (d[..., 0] * (C[:, 1] - A[:, 1])[:, None] - d[..., 1] * (C[:, 0] - A[:, 0])[:, None]) / det[:, None]
+        l2 = ((B[:, 0] - A[:, 0])[:, None] * d[..., 1] - (B[:, 1] - A[:, 1])[:, None] * d[..., 0]) / det[:, None]
+        return tV[:, :1] * (1.0 - l1 - l2) + tV[:, 1:2] * l1 + tV[:, 2:3] * l2          # (P, V)
+
+    def _projectBack(self, cellValues, pointInput, fill, minSupport):
+        """L2 projection of the target field onto the source's linear (sub-triangle) elements."""
+        piece, slots, fanArea = self._pieceFans()
+        lam = self._pBary[piece[:, None], slots]                               # (F, 3 vertices, 3 lambdas)
+        if pointInput is not None:
+            T = self._targetAtPieceVertices(pointInput)[piece[:, None], slots]  # (F, 3)
+        else:
+            T = np.repeat(cellValues[self._pTgt[piece]][:, None], 3, axis=1)
+        # exact quadratic integrals over a triangle: int f g = A / 12 (sum f_i g_i + sum f sum g)
+        quad = lambda f, g: fanArea / 12.0 * (np.sum(f * g, axis=1) + f.sum(axis=1) * g.sum(axis=1))   # noqa: E731
+        sub = self._pSrc[piece]
+        nS = self._sx.shape[0]
+        rows, cols, vals, bRows, bVals = [], [], [], [], []
+        for a in range(3):
+            bRows.append(3 * sub + a)
+            bVals.append(quad(lam[:, :, a], T))
+            for b in range(3):
+                rows.append(3 * sub + a)
+                cols.append(3 * sub + b)
+                vals.append(quad(lam[:, :, a], lam[:, :, b]))
+        Msub = SparseMatrix(np.concatenate(rows), np.concatenate(cols), np.concatenate(vals), (3 * nS, 3 * nS))
+        bsub = np.bincount(np.concatenate(bRows), weights=np.concatenate(bVals), minlength=3 * nS)
+        V = self._sV
+        # M = V^T Msub V, b = V^T bsub (sub-triangle vertices are combinations of source points)
+        nP = self.source.nPoints
+        M = _spmm(V.T, _spmm(Msub, V))
+        b = V.rmatvec(bsub)
+        lumped = np.bincount(M.row, weights=M.data, minlength=nP)              # covered support of each node
+        full = V.rmatvec(np.repeat(self._sArea / 3.0, 3))                       # whole support
+        # solve on every node with any covered support (the restricted projection stays exact for
+        # linear fields); thin-support nodes are poorly determined and reported as ``fill`` afterwards
+        live = lumped > 0.0
+        idx = np.flatnonzero(live)
+        keep = live[M.row] & live[M.col]
+        Mr = SparseMatrix(np.searchsorted(idx, M.row[keep]), np.searchsorted(idx, M.col[keep]), M.data[keep],
+                          (idx.size, idx.size))
+        x, iters, res = _pcg(Mr, b[idx], _diagonal(Mr))
+        out = np.full(nP, float(fill))
+        out[idx] = x
+        thin = live & (lumped < minSupport * np.maximum(full, 1e-300))
+        out[thin] = float(fill)
+        return out, {"projectionNodes": int((live & ~thin).sum()), "projectionIterations": iters,
+                     "projectionResidual": res, "projectionDroppedNodes": int(thin.sum())}
 
     def _unmatched_nearest(self) -> bool:
         return getattr(self, "_unmatchedMode", "nearest") == "nearest"

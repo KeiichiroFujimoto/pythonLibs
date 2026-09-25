@@ -417,6 +417,8 @@ class ScalableKrigingModel(KrigingModel):
     # ------------------------------------------------------------------ reporting / unsupported dense features
     def spatialSummary(self) -> dict:
         self._checkTrained()
+        if self._subModels is not None:
+            return {"outputs": [m.spatialSummary() for m in self._subModels]}
         out = {"lambda": self._eta, "sigma2": self._sigma2 * self._yStd ** 2,
                "tau": float(np.sqrt(self._eta * self._sigma2)) * self._yStd,
                "logLikelihood": self._logLik, "n": int(self._xs.shape[0]),
@@ -432,6 +434,8 @@ class ScalableKrigingModel(KrigingModel):
     @property
     def hyperparameters(self) -> dict:
         self._checkTrained()
+        if self._subModels is not None:
+            return {"outputs": [m.hyperparameters for m in self._subModels]}
         names = self._kernel.paramNames() + (["log_nugget"] if self._autoNugget else [])
         return {"logParams": dict(zip(names, self._params.tolist())), "processVariance": self._sigma2 * self._yStd ** 2,
                 "nugget": self._eta, "logLikelihood": self._logLik, "trendCoefficients": self._beta.tolist(),
@@ -444,6 +448,8 @@ class ScalableKrigingModel(KrigingModel):
 
     def summary(self) -> str:
         text = super(KrigingModel, self).summary()
+        if self._subModels is not None:
+            return text
         rows = [f"  {k:>16}: {v}" for k, v in self.spatialSummary().items()]
         return text + "\n\nCovariance model (" + self.options["approximation"] + "):\n" + "\n".join(rows)
 

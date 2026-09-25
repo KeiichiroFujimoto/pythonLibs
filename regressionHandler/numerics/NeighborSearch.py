@@ -16,14 +16,21 @@ import numpy as np
 def _bruteForce(points: np.ndarray, queries: np.ndarray, k: int, chunk: int = 1024):
     dist = np.empty((queries.shape[0], k))
     idx = np.empty((queries.shape[0], k), dtype=np.int64)
+    # the Gram identity cancels badly for points far from the origin: centre first, and take the
+    # returned k distances from coordinate differences (exact, e.g. 0 for a query at a data point)
+    centre = points.mean(axis=0)
+    points = points - centre
+    queries = queries - centre
     p2 = np.sum(points * points, axis=1)
+    chunk = max(1, min(chunk, 4_000_000 // max(k * points.shape[1], 1)))
     for s in range(0, queries.shape[0], chunk):
         q = queries[s:s + chunk]
         d2 = np.maximum(np.sum(q * q, axis=1)[:, None] + p2[None, :] - 2.0 * (q @ points.T), 0.0)
         part = np.argpartition(d2, k - 1, axis=1)[:, :k] if k < points.shape[0] else \
             np.tile(np.arange(points.shape[0]), (q.shape[0], 1))
-        dd = np.take_along_axis(d2, part, axis=1)
-        order = np.argsort(dd, axis=1)
+        diff = points[part] - q[:, None, :]
+        dd = np.einsum("mkd,mkd->mk", diff, diff)
+        order = np.argsort(dd, axis=1, kind="stable")
         idx[s:s + chunk] = np.take_along_axis(part, order, axis=1)
         dist[s:s + chunk] = np.sqrt(np.take_along_axis(dd, order, axis=1))
     return dist, idx

@@ -74,6 +74,7 @@ class RbfModel(SurrogateModelBase):
             raise ValueError(f"kernel {kernel} needs degree >= {_MIN_DEGREE[kernel]}")
         self._deg = deg
         self._poly = PolynomialBasis(degree=deg).fit(self._xs) if deg >= 0 else None
+        self._tailCols = None
         n = x.shape[0]
         q = polynomialExponents(self.nx, deg).shape[0] if deg >= 0 else 0
         if q > n:
@@ -210,14 +211,46 @@ class RbfModel(SurrogateModelBase):
     def _scaled(self, x):
         return (x - self._mean) / self._std
 
+    def _tail(self, xs: np.ndarray) -> np.ndarray:
+        """Polynomial tail terms; for degree <= 1 built directly (the same values as the basis transform)."""
+        if self._deg <= 1:
+            exps = self._poly.exponents
+            cols = [np.ones(xs.shape[0]) if not e.any() else xs[:, int(np.argmax(e))] for e in exps]
+            return np.column_stack(cols)
+        return self._poly.transform(xs)
+
     def _predictValues(self, x: np.ndarray) -> np.ndarray:
         xs = self._scaled(x)
         if self._neighbors is not None:
             return self._predictLocal(xs)
         out = rbfValue(self.options["kernel"], pairwiseDistances(xs, self._xs), self._eps) @ self._coef
         if self._poly is not None:
-            out = out + self._poly.transform(xs) @ self._polyCoef
+            out = out + self._tail(xs) @ self._polyCoef
         return out
+
+    def __call__(self, x) -> np.ndarray:
+        """Evaluation at ``x`` (m, nx) without input validation: (m,) single output, (m, ny) otherwise.
+
+        A single point skips the Gram-identity distance matrix and takes the distances from the
+        coordinate differences (no cancellation; batch and single results agree to ~1e-10 relative,
+        as they already did between BLAS matrix-vector and matrix-matrix products).
+        """
+        self._checkTrained()
+        x = np.asarray(x, dtype=float).reshape(-1, self.nx)
+        if x.shape[0] == 1 and self._neighbors is None:
+            xs = (x[0] - self._mean) / self._std
+            diff = self._xs - xs
+            y = rbfValue(self.options["kernel"], np.sqrt(np.einsum("ij,ij->i", diff, diff)), self._eps) @ self._coef
+            if self._poly is not None:
+                cols = getattr(self, "_tailCols", None)
+                if cols is None and self._deg <= 1:
+                    cols = self._tailCols = [int(np.argmax(e)) if e.any() else -1 for e in self._poly.exponents]
+                tail = (np.array([1.0 if c < 0 else xs[c] for c in cols]) if self._deg <= 1
+                        else self._poly.transform(xs[None, :])[0])
+                y = y + tail @ self._polyCoef
+            return y if y.shape[0] == 1 else y[None, :]      # (1,) single output, (1, ny) otherwise
+        y = self._predictValues(x)
+        return y[:, 0] if y.shape[1] == 1 else y
 
     def _predictLocal(self, xs: np.ndarray, chunk: int = 1024) -> np.ndarray:
         k = self._neighbors
@@ -280,6 +313,7 @@ class RbfModel(SurrogateModelBase):
         self._w = np.array(state["w"], dtype=float)
         self._eps, self._smoothing, self._deg = float(state["eps"]), float(state["smoothing"]), int(state["deg"])
         self._poly = PolynomialBasis(degree=self._deg).fit(self._xs) if self._deg >= 0 else None
+        self._tailCols = None
         n = self._xs.shape[0]
         self._search = None
         self._neighbors = self.options["neighbors"] if self.options["neighbors"] and self.options["neighbors"] < n \

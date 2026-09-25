@@ -73,6 +73,12 @@ class GlmModel(SurrogateModelBase):
         return buildFamily(spec)
 
     # ------------------------------------------------------------------ design
+    def _checkOffsetColumn(self) -> None:
+        # negative indices count from the end; anything outside [-nx, nx) would silently wrap around
+        oc = self.options["offsetColumn"]
+        if oc is not None and not -self.nx <= oc < self.nx:
+            raise ValueError(f"offsetColumn={oc} is out of range for {self.nx} inputs")
+
     def _split(self, x):
         oc = self.options["offsetColumn"]
         if oc is None:
@@ -88,6 +94,7 @@ class GlmModel(SurrogateModelBase):
     # ------------------------------------------------------------------ training
     def _train(self) -> None:
         y, w = self.yt[:, 0], self.wt
+        self._checkOffsetColumn()
         self._family = self._makeFamily()
         self._family.checkResponse(y)
         xb, off = self._split(self.xt)

@@ -393,6 +393,26 @@ class InverseGaussian(Family):
             raise ValueError("inverse Gaussian responses must be positive")
 
 
+def _digammaTrigammaDifferences(y, t: float):
+    """psi(y + t) - psi(t) and psi'(y + t) - psi'(t) for y >= 0, accurate also for very large t.
+
+    For large t the differences are formed from the asymptotic series of psi and psi'
+    with every bracket written without cancellation.
+    """
+    y = np.asarray(y, dtype=float)
+    if t < 1e4:
+        return _sf.digamma(y + t) - _sf.digamma(t), _sf.trigamma(y + t) - _sf.trigamma(t)
+    s = t + y
+    d1 = -y / (t * s)                                            # 1/s - 1/t
+    d2 = -y * (2.0 * t + y) / (t * t * s * s)                    # 1/s^2 - 1/t^2
+    d3 = -y * (3.0 * t * t + 3.0 * t * y + y * y) / (t ** 3 * s ** 3)
+    d4 = s ** -4 - t ** -4.0
+    d5 = s ** -5 - t ** -5.0
+    dg = np.log1p(y / t) - 0.5 * d1 - d2 / 12.0 + d4 / 120.0
+    tg = d1 + 0.5 * d2 + d3 / 6.0 - d5 / 30.0
+    return dg, tg
+
+
 class NegativeBinomial(Family):
     """Var = mu + mu^2 / theta; theta fixed or estimated by maximum likelihood (theta=None)."""
     name = "negativeBinomial"
@@ -434,10 +454,12 @@ class NegativeBinomial(Family):
         logT = np.log(self.theta)
         for _ in range(maxIter):
             t = np.exp(logT)
-            score = np.sum(w * (_sf.digamma(y + t) - _sf.digamma(t) + np.log(t) + 1.0 - np.log(t + mu)
-                                - (y + t) / (t + mu)))
-            info = np.sum(w * (_sf.trigamma(y + t) - _sf.trigamma(t) + 1.0 / t - 2.0 / (t + mu)
-                               + (y + t) / (t + mu) ** 2))
+            # Terms regrouped so that no two O(log t) quantities are subtracted: for equidispersed
+            # (Poisson-like) data theta -> infinity and the naive form's round-off flips the sign of
+            # the O(1/t^2) score, making theta oscillate instead of settling at the upper limit.
+            dg, tg = _digammaTrigammaDifferences(y, t)
+            score = np.sum(w * (dg - np.log1p(mu / t) + (mu - y) / (t + mu)))
+            info = np.sum(w * (tg + (mu * mu + t * y) / (t * (t + mu) ** 2)))
             # d/dlogT: score*t ; d2/dlogT2: t*score + t^2*info
             g = score * t
             h = t * score + t * t * info
