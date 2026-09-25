@@ -62,7 +62,7 @@ def test_pointFluxRespectsGroupsAndSigns():
     res = m.map(positive, "point", pointFlux=True, groups=groups)
     assert res.pointFlux.min() >= 0.0                                  # incoming heat only: no negative nodes
     for g in (0, 1):
-        c = m._massRows(np.where(groups == g, 0, 1))
+        c = m._nodalRows(np.where(groups == g, 0, 1))
         assert (c @ res.pointFlux)[0] == pytest.approx(res.cellHeatPlus[groups == g].sum(), rel=1e-12)
 
 
@@ -130,3 +130,85 @@ def test_repeatedMappingReusesTheGeometry():
     a = m.map(_field(src.points), "point")
     b = m.map(2.0 * _field(src.points), "point")
     np.testing.assert_allclose(b.cellFlux, 2.0 * a.cellFlux, rtol=1e-12, atol=1e-15)
+
+
+# ---------------------------------------------------------------- face-area weighting
+def _rectGrid(xs, ys, z=None):
+    from pythonLibs.fieldMapping.mesh.Mesh import UnstructuredMesh
+    X, Y = np.meshgrid(xs, ys, indexing="ij")
+    pts = np.column_stack([X.ravel(), Y.ravel(), np.zeros(X.size) if z is None else z(X.ravel(), Y.ravel())])
+    ny = len(ys)
+    idx = lambda i, j: i * ny + j                                                 # noqa: E731
+    quads = [[idx(i, j), idx(i + 1, j), idx(i + 1, j + 1), idx(i, j + 1)]
+             for i in range(len(xs) - 1) for j in range(len(ys) - 1)]
+    return UnstructuredMesh.fromBlocks(pts, [(9, np.array(quads))])
+
+
+def test_gradedGridsAreAreaWeightedExactly():
+    # strongly graded source (face areas vary ~100x) onto a uniform target: target heat = sum q_s |s cap t|
+    xs = np.concatenate([[0.0], np.cumsum(np.geomspace(0.002, 0.2, 14))])
+    xs = xs / xs[-1]
+    ys = np.linspace(0, 1, 9) ** 1.7
+    xt, yt = np.linspace(0, 1, 6), np.linspace(0, 1, 5)
+    src, tgt = _rectGrid(xs, ys), _rectGrid(xt, yt)
+    q = np.random.default_rng(3).normal(size=src.nCells)
+    res = SurfaceFluxMapper(src, tgt).map(q, "cell")
+
+    def overlap(a0, a1, b0, b1):
+        return max(0.0, min(a1, b1) - max(a0, b0))
+    ref = np.zeros(tgt.nCells)
+    k = 0
+    for i in range(len(xs) - 1):
+        for j in range(len(ys) - 1):
+            t = 0
+            for a in range(len(xt) - 1):
+                for b in range(len(yt) - 1):
+                    ref[t] += q[k] * overlap(xs[i], xs[i + 1], xt[a], xt[a + 1]) * \
+                        overlap(ys[j], ys[j + 1], yt[b], yt[b + 1])
+                    t += 1
+            k += 1
+    np.testing.assert_allclose(res.cellHeatPlus + res.cellHeatMinus, ref, atol=1e-15)
+    np.testing.assert_allclose(res.cellFlux * tgt.cellMeasures(), ref, atol=1e-15)
+
+
+def test_warpedFacesUseTheChosenFaceArea():
+    from pythonLibs.fieldMapping.SurfaceFluxMapper import faceAreas
+    warp = lambda x, y: 0.08 * np.sin(7 * x) * np.cos(5 * y)                  # noqa: E731
+    src = _rectGrid(np.linspace(0, 1, 13), np.linspace(0, 1, 11), warp)
+    tgt = _rectGrid(np.linspace(0, 1, 6), np.linspace(0, 1, 5), warp)
+    q = 1.0 + 0.5 * src.cellCentroids()[:, 0]
+    vec, fan, fe = (faceAreas(src, c) for c in ("vector", "fan", "fe"))
+    assert np.all(vec <= fan + 1e-15) and np.max(fan - vec) > 1e-6          # warped: conventions differ
+    for conv, areas in (("vector", vec), ("fan", fan), ("fe", fe)):
+        res = SurfaceFluxMapper(src, tgt, sourceArea=conv).map(q, "cell")
+        assert res.diagnostics["sourceHeatIn"] == pytest.approx(np.sum(q * areas), rel=1e-14)
+        assert res.cellHeatPlus.sum() == pytest.approx(np.sum(q * areas), rel=1e-14)
+    # the solver's own face areas, given as a cell array
+    src.cellData["faceArea"] = vec * 1.01
+    res = SurfaceFluxMapper(src, tgt, sourceArea="faceArea").map(q, "cell")
+    assert res.cellHeatPlus.sum() == pytest.approx(np.sum(q * vec * 1.01), rel=1e-14)
+    # target flux times the target face area (any convention) is the target face heat
+    for conv in ("vector", "fe"):
+        m = SurfaceFluxMapper(src, tgt, targetArea=conv)
+        r = m.map(q, "cell")
+        np.testing.assert_allclose(r.cellFlux * faceAreas(tgt, conv), r.cellHeatPlus, rtol=1e-13)
+        assert r.nodalLoads.sum() == pytest.approx(r.cellHeatPlus.sum(), rel=1e-13)
+
+
+def test_nodalFluxIsFaceAreaWeighted():
+    xs = np.concatenate([[0.0], np.cumsum(np.geomspace(0.01, 0.3, 8))])
+    tgt = _rectGrid(xs / xs[-1], np.linspace(0, 1, 5))
+    src = planeSurface(n=(30, 30), cellType="triangle", jitter=0.2)
+    m = SurfaceFluxMapper(src, tgt)
+    # uniform flux: every nodal value equals it (area-weighted average of equal values, no correction)
+    res = m.map(np.full(src.nCells, 3.0), "cell", pointFlux=True)
+    used = np.unique(tgt.connectivity)
+    np.testing.assert_allclose(res.pointFlux[used], 3.0, rtol=1e-13)
+    # general flux: sum_i a_i q_i = heat with tributary areas a_i = sum_f A_f / 4
+    q = np.abs(_field(src.cellCentroids())) + 0.1
+    res = m.map(q, "cell", pointFlux=True)
+    area = tgt.cellMeasures()
+    a = np.zeros(tgt.nPoints)
+    np.add.at(a, tgt.connectivity.reshape(-1, 4), np.repeat(area[:, None] / 4, 4, axis=1))
+    assert a @ res.pointFlux == pytest.approx(res.diagnostics["sourceHeatIn"], rel=1e-12)
+    assert res.pointFlux.min() >= 0.0

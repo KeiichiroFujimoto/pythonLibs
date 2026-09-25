@@ -91,6 +91,9 @@ class FieldMappingHandler(toolBaseSecured):
         "orientation": "Source normal orientation: auto, same or opposite",
         "unmatched": "Heat without overlap: 'nearest' facet within maxDistance, or 'drop'",
         "outputFile": "Result file (.vtu, or .pvd for time series)",
+        "sourceArea": "Source face areas: auto, vector (finite-volume), fan, fe, or a cell array with the solver's areas",
+        "targetArea": "Target face areas for flux = heat / area: fe (default), vector, fan or a cell array",
+        "nodalWeighting": "Nodal flux: 'area' (tributary face area) or 'consistent' (finite-element mass)",
         "sourceSeries": "Optional .pvd time series of the source (same geometry at every time)",
         "stations": "List of stations {position, time, depth, temperature, interfaces, name}",
         "stationsFile": "JSON file with the stations list",
@@ -190,11 +193,13 @@ class FieldMappingHandler(toolBaseSecured):
                        reconstruction: str = "constant", pointFlux: bool = False, groupArray: Optional[str] = None,
                        maxDistance: Optional[float] = None, maxAngle: float = 60.0, orientation: str = "auto",
                        unmatched: str = "nearest", resultName: Optional[str] = None,
-                       outputFile: Optional[str] = None, sourceSeries: Optional[str] = None) -> dict:
+                       outputFile: Optional[str] = None, sourceSeries: Optional[str] = None,
+                       sourceArea: str = "auto", targetArea: str = "fe", nodalWeighting: str = "area") -> dict:
         """Conservative, sign-preserving transfer of a surface flux (incoming / outgoing heat conserved)."""
         src, tgt = self.getMesh(sourceMesh), self.getMesh(targetMesh)
         mapper = SurfaceFluxMapper(src, tgt, maxDistance=maxDistance, maxAngle=maxAngle, orientation=orientation,
-                                   unmatched=unmatched)
+                                   unmatched=unmatched, sourceArea=sourceArea, targetArea=targetArea,
+                                   nodalWeighting=nodalWeighting)
         surf = mapper.target
         groups = None if groupArray is None else np.asarray(surf.cellData[groupArray])
 

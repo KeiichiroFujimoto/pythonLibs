@@ -14,6 +14,17 @@ refinement of the two surfaces:
    area, is distributed to the target facets in proportion to the integrals
    of q over its pieces (projected geometry).
 
+Face areas. The heat of a source face is q_f A_f with the face area A_f of
+the chosen convention (``sourceArea``): "vector" (magnitude of the face-area
+vector, the finite-volume convention), "fan" (sum of the centroid-fan
+triangle areas), "fe" (isoparametric area) or the solver's own face areas
+(a cell array); "auto" uses "vector" for linear faces and polygons and
+"fe" for quadratic faces. Inside a face, the heat is split over its
+flat sub-triangles in proportion to their integrals of q. The target flux
+is Q_t / A_t with ``targetArea`` (default "fe", consistent with the nodal
+loads). Warped quadrilaterals are split around their centroid so no
+diagonal is preferred.
+
 Hence, exactly (to round-off),
 
     sum over target facets of Q+  =  source incoming heat
@@ -28,9 +39,11 @@ Outputs (``FluxMapResult``):
 
     cellFlux      piecewise-constant target flux Q_t / A_t (curved facet areas)
     nodalLoads    consistent nodal loads f_i = sum_t q_t int_t N_i dA, sum f = total heat
-    pointFlux     optional nodal flux values: lumped L2 projection corrected by
-                  the conservative projection (incoming and outgoing parts
-                  separately, sign bounds, per-group heat constraints)
+    pointFlux     optional nodal flux values: face-area weighted average of the
+                  adjacent face fluxes (tributary area A_f / n_f per node, default)
+                  or HRZ-lumped L2 projection, corrected by the conservative
+                  projection so that sum_i a_i q_i equals the heat (incoming and
+                  outgoing parts separately, sign bounds, per-group constraints)
 
 The geometric part (pairs and pieces) is built once; ``map`` is cheap and can
 be called for every time step of a transient flux.
@@ -70,6 +83,99 @@ def _signedParts(poly, count, vals):
     return plus, -minus
 
 
+AREA_CONVENTIONS = ("auto", "vector", "fan", "fe")
+_QUADRATIC_FACES = (22, 23, 28)
+
+
+def facetSubTriangles(mesh: UnstructuredMesh, cells=None):
+    """Flat sub-triangles of 2-D cells whose vertices are combinations of mesh points.
+
+    Triangles are kept, quads and polygons are split around their vertex
+    centroid (no preferred diagonal), quadratic faces through their mid-side
+    nodes. Returns (coords (m, 3, 3), parent cell (m,), V) with V a
+    SparseMatrix (3 m, nPoints) so that sub-triangle vertex values = V @ nodal values.
+    """
+    idx = np.flatnonzero(mesh.cellDimensions() == 2) if cells is None else np.asarray(cells, dtype=np.int64)
+    parents, rows, cols, vals = [], [], [], []
+    count = 0
+
+    def add(ids, verts):
+        """verts: list of 3 entries, each (node columns (k, j), weights (j,))."""
+        nonlocal count
+        k = ids.size
+        tri = count + np.arange(k)
+        for v, (nodes, w) in enumerate(verts):
+            j = nodes.shape[1]
+            rows.append(np.repeat(3 * tri + v, j))
+            cols.append(nodes.ravel())
+            vals.append(np.tile(w, k))
+        parents.append(ids)
+        count += k
+
+    for t, (ids, conn) in mesh.blocks(idx).items():
+        one = lambda c: (conn[:, [c]], np.ones(1))                        # noqa: E731
+        if t == 5:
+            add(ids, [one(0), one(1), one(2)])
+        elif t == 9:
+            cen = (conn, np.full(4, 0.25))
+            for a in range(4):
+                add(ids, [cen, one(a), one((a + 1) % 4)])
+        elif t == 22:
+            for pc in ([0, 3, 5], [3, 1, 4], [5, 4, 2], [3, 4, 5]):
+                add(ids, [one(pc[0]), one(pc[1]), one(pc[2])])
+        elif t in (23, 28):
+            for pc in ([0, 4, 7], [4, 1, 5], [5, 2, 6], [6, 3, 7], [4, 5, 7], [5, 6, 7]):
+                add(ids, [one(pc[0]), one(pc[1]), one(pc[2])])
+        else:
+            raise ValueError(f"cannot split cell type {t} into triangles")
+    for c in idx[mesh.cellTypes[idx] == 7]:
+        v = mesh.cell(c)
+        n = v.size
+        ids = np.full(n, c)
+        cen = (np.tile(v, (n, 1)), np.full(n, 1.0 / n))
+        add(ids, [cen, (v[:, None], np.ones(1)), (np.roll(v, -1)[:, None], np.ones(1))])
+    if count == 0:
+        return np.zeros((0, 3, 3)), np.zeros(0, np.int64), SparseMatrix([], [], [], (0, mesh.nPoints))
+    V = SparseMatrix.raw(np.concatenate(rows), np.concatenate(cols), np.concatenate(vals), (3 * count, mesh.nPoints))
+    coords = (V @ mesh.points).reshape(count, 3, 3)
+    return coords, np.concatenate(parents).astype(np.int64), V
+
+
+def faceAreas(mesh: UnstructuredMesh, convention="auto", cells=None, order: int = 4) -> np.ndarray:
+    """Area of every cell (zero outside ``cells``) in the given convention.
+
+    convention: "vector" (|sum of sub-triangle area vectors|, finite-volume
+    faces), "fan" (sum of the sub-triangle areas), "fe" (isoparametric
+    quadrature), "auto" (vector for linear faces / polygons, fe for quadratic
+    faces), the name of a cell array, or an array of areas.
+    """
+    idx = np.flatnonzero(mesh.cellDimensions() == 2) if cells is None else np.asarray(cells, dtype=np.int64)
+    if not isinstance(convention, str) or convention not in AREA_CONVENTIONS:
+        arr = np.asarray(mesh.cellData[convention] if isinstance(convention, str) else convention, dtype=float)
+        if arr.shape != (mesh.nCells,):
+            raise ValueError("face area array needs one value per cell")
+        out = np.zeros(mesh.nCells)
+        out[idx] = arr[idx]
+        return out
+    out = np.zeros(mesh.nCells)
+    if convention in ("fe", "auto"):
+        q = mesh.quadrature(order, idx)
+        fe = np.bincount(q.cell, weights=q.weight, minlength=mesh.nCells)
+        if convention == "fe":
+            return fe
+    x, par, _ = facetSubTriangles(mesh, idx)
+    cr = 0.5 * np.cross(x[:, 1] - x[:, 0], x[:, 2] - x[:, 0])
+    if convention == "fan":
+        return np.bincount(par, weights=np.linalg.norm(cr, axis=1), minlength=mesh.nCells)
+    vec = np.zeros((mesh.nCells, 3))
+    np.add.at(vec, par, cr)
+    out = np.linalg.norm(vec, axis=1)
+    if convention == "auto":
+        quad = np.isin(mesh.cellTypes, _QUADRATIC_FACES)
+        out = np.where(quad, fe, out)
+    return out
+
+
 @dataclass
 class FluxMapResult:
     """Mapped flux on the target surface and conservation diagnostics."""
@@ -107,11 +213,20 @@ class SurfaceFluxMapper:
         unmatched:    "nearest" (gaps go to the nearest target facet within
                       maxDistance) or "drop"
         order:        quadrature order of the target facets (nodal loads, areas)
+        sourceArea:   face-area convention of the source ("auto", "vector", "fan", "fe",
+                      or a cell array / array with the solver's face areas)
+        targetArea:   face-area convention of the target flux Q_t / A_t (default "fe")
+        nodalWeighting: nodal flux weights: "area" (tributary face area A_f / n_f) or
+                      "consistent" (HRZ-lumped finite-element mass)
     """
 
     def __init__(self, source: UnstructuredMesh, target: UnstructuredMesh, targetCells=None,
                  maxDistance: Optional[float] = None, maxAngle: float = 60.0, orientation: str = "auto",
-                 unmatched: str = "nearest", order: int = 4, chunk: int = 200_000) -> None:
+                 unmatched: str = "nearest", order: int = 4, chunk: int = 200_000, sourceArea="auto",
+                 targetArea="fe", nodalWeighting: str = "area") -> None:
+        if nodalWeighting not in ("area", "consistent"):
+            raise ValueError("nodalWeighting must be 'area' or 'consistent'")
+        self._nodalWeighting = nodalWeighting
         if unmatched not in ("nearest", "drop"):
             raise ValueError("unmatched must be 'nearest' or 'drop'")
         if orientation not in ("auto", "same", "opposite"):
@@ -129,24 +244,28 @@ class SurfaceFluxMapper:
         self.target = surf
         self._targetMask = mask
         self._order = order
-        # flat triangles
-        sTri, sPar = source.triangulate()
-        tTri, tPar = surf.triangulate()
-        keepT = mask[tPar]
-        tTri, tPar = tTri[keepT], tPar[keepT]
-        self._sTri, self._sPar = sTri, sPar
-        self._tTri, self._tPar = tTri, tPar
-        sx, tx = source.points[sTri], surf.points[tTri]
+        # flat sub-triangles (centroid fans for quads / polygons)
+        sx, sPar, sV = facetSubTriangles(source)
+        tx, tPar, _ = facetSubTriangles(surf, np.flatnonzero(mask))
+        self._sx, self._sPar, self._sV = sx, sPar, sV
+        self._tPar = tPar
         _, _, _, sN, sA = triangleFrames(sx)
         to, te1, te2, tN, tA = triangleFrames(tx)
         self._sArea = sA
+        # face areas: the heat of a source face is q_f A_f in the chosen convention
+        srcCells = np.unique(sPar)
+        self.sourceFaceAreas = faceAreas(source, sourceArea, srcCells, order)
+        subArea = np.bincount(sPar, weights=sA, minlength=source.nCells)
+        self._sScale = np.where(subArea > 0, self.sourceFaceAreas / np.where(subArea > 0, subArea, 1.0), 0.0)
+        self.targetFaceAreas = faceAreas(surf, targetArea, np.flatnonzero(mask), order)
         edge = lambda x: np.median(np.linalg.norm(x[:, 1] - x[:, 0], axis=1)) if x.size else 0.0   # noqa: E731
         self.maxDistance = float(maxDistance) if maxDistance is not None else 0.5 * max(edge(sx), edge(tx))
         tol = self.maxDistance
         i, j = boxPairs(sx.min(axis=1) - tol, sx.max(axis=1) + tol, tx.min(axis=1) - tol, tx.max(axis=1) + tol)
-        # distance of the source triangle to the target triangle (centroid based)
-        _, dist, _ = closestPointOnTriangles(sx[i].mean(axis=1), tx[j]) if i.size else (None, np.zeros(0), None)
-        near = dist <= tol
+        # normal gap between the surfaces: distance of the source vertices to the target plane (the
+        # box test already keeps the pair close in the plane)
+        gap = np.abs(np.einsum("pvd,pd->pv", sx[i] - to[j][:, None, :], tN[j])).min(axis=1) if i.size else np.zeros(0)
+        near = gap <= tol
         i, j = i[near], j[near]
         dots = np.einsum("pd,pd->p", sN[i], tN[j])
         if orientation == "auto":
@@ -182,9 +301,9 @@ class SurfaceFluxMapper:
         # target quadrature (areas, loads)
         tq = surf.quadrature(order, np.flatnonzero(mask))
         self._tq = tq
-        self.targetAreas = np.bincount(tq.cell, weights=tq.weight, minlength=surf.nCells)
+        self.targetAreas = np.bincount(tq.cell, weights=tq.weight, minlength=surf.nCells)      # FE areas
         # projected overlap area / source triangle area (about 1 where the target covers the source)
-        self.coverage = np.bincount(self._pSrc, weights=self._pArea, minlength=sTri.shape[0]) / np.maximum(sA, 1e-300)
+        self.coverage = np.bincount(self._pSrc, weights=self._pArea, minlength=sx.shape[0]) / np.maximum(sA, 1e-300)
 
     def _nearestTarget(self, sx, tx, tPar, tol):
         cen = sx.mean(axis=1)
@@ -207,7 +326,7 @@ class SurfaceFluxMapper:
         if location == "point":
             if values.size != self.source.nPoints:
                 raise ValueError(f"point flux needs {self.source.nPoints} values")
-            return values[self._sTri]
+            return (self._sV @ values).reshape(-1, 3)
         if location != "cell":
             raise ValueError("location must be 'cell' or 'point'")
         if values.size != self.source.nCells:
@@ -222,7 +341,7 @@ class SurfaceFluxMapper:
     def _linearReconstruction(self, qc: np.ndarray) -> np.ndarray:
         """Mean-, bound- and sign-preserving linear reconstruction of cell values on each source facet."""
         src = self.source
-        sx = src.points[self._sTri]
+        sx = self._sx
         area = self._sArea
         nC = src.nCells
         cellArea = np.bincount(self._sPar, weights=area, minlength=nC)
@@ -299,7 +418,9 @@ class SurfaceFluxMapper:
         qv = self._vertexValues(values, location, reconstruction)            # (nS, 3)
         ref = np.tile(np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]), (qv.shape[0], 1, 1))
         fp, fm = _signedParts(ref, np.full(qv.shape[0], 3), qv)
-        qPlus, qMinus = fp * 2.0 * self._sArea, fm * 2.0 * self._sArea       # heat of each source triangle
+        # heat of each source sub-triangle, scaled so that every face carries q_f A_f (face-area convention)
+        scale = 2.0 * self._sArea * self._sScale[self._sPar]
+        qPlus, qMinus = fp * scale, fm * scale
         # pieces: q at the polygon vertices from the source barycentric coordinates
         pv = np.einsum("pvk,pk->pv", self._pBary, qv[self._pSrc])
         iPlus, iMinus = _signedParts(self._pPoly, self._pCnt, pv)
@@ -329,10 +450,13 @@ class SurfaceFluxMapper:
                 droppedPlus = lost
             else:
                 droppedMinus = lost
-        area = self.targetAreas
-        cellFlux = np.where(area > 0, (heatPlus + heatMinus) / np.where(area > 0, area, 1.0), 0.0)
+        area = self.targetFaceAreas
+        heat = heatPlus + heatMinus
+        cellFlux = np.where(area > 0, heat / np.where(area > 0, area, 1.0), 0.0)
+        # nodal loads: the heat of every target face spread with its shape functions (sum = heat exactly)
         tq = self._tq
-        loads = tq.loadVector(cellFlux[tq.cell])
+        fe = np.where(self.targetAreas > 0, self.targetAreas, 1.0)
+        loads = tq.loadVector((heat / fe)[tq.cell])
         pf = self._pointFlux(heatPlus, heatMinus, groups) if pointFlux else None
         srcPlus, srcMinus = float(qPlus.sum()), float(qMinus.sum())
         tgtPlus, tgtMinus = float(heatPlus.sum()), float(heatMinus.sum())
@@ -346,9 +470,12 @@ class SurfaceFluxMapper:
                 "sourcePeakFlux": srcPeak,
                 "targetPeakFlux": float(np.max(np.abs(cellFlux[self._targetMask]))) if self._targetMask.any() else 0.0,
                 "coverageMin": float(self.coverage.min()) if self.coverage.size else 1.0,
+                "sourceArea": float(self.sourceFaceAreas.sum()),
+                "targetArea": float(area[self._targetMask].sum()),
+                "matchedTargetArea": float(area[(heatPlus != 0) | (heatMinus != 0)].sum()),
                 "nPieces": int(self._pSrc.size)}
         if pf is not None:
-            diag["pointFluxHeat"] = float((self._massRows(np.zeros(self.target.nCells, int)) @ pf)[0])
+            diag["pointFluxHeat"] = float((self._nodalRows(np.zeros(self.target.nCells, int)) @ pf)[0])
         return FluxMapResult(cellFlux, heatPlus, heatMinus, loads, pf, diag)
 
     def _unmatched_nearest(self) -> bool:
@@ -363,7 +490,57 @@ class SurfaceFluxMapper:
         return SparseMatrix(rows, tq.interp.col, tq.interp.data * tq.weight[tq.interp.row],
                             (int(g.max()) + 1 if g.size else 1, self.target.nPoints))
 
+    def _tributary(self):
+        """Per (face, node) entries of the tributary areas A_f / n_f of the target faces."""
+        surf = self.target
+        cells = np.flatnonzero(self._targetMask)
+        sizes = surf.offsets[cells + 1] - surf.offsets[cells]
+        face = np.repeat(cells, sizes)
+        pos = np.repeat(surf.offsets[cells], sizes) + (np.arange(int(sizes.sum())) - np.repeat(np.cumsum(sizes) - sizes,
+                                                                                                    sizes))
+        node = surf.connectivity[pos]
+        return face, node, self.targetFaceAreas[face] / np.repeat(sizes, sizes)
+
+    def _nodalRows(self, groups: np.ndarray) -> SparseMatrix:
+        """Heat of the nodal flux per group: C[g, i] = a_i^g (tributary area or int N_i)."""
+        if self._nodalWeighting == "consistent":
+            return self._massRows(groups)
+        face, node, a = self._tributary()
+        g = np.asarray(groups)[face]
+        return SparseMatrix(g, node, a, (int(g.max()) + 1 if g.size else 1, self.target.nPoints))
+
     def _pointFlux(self, heatPlus, heatMinus, groups) -> np.ndarray:
+        if self._nodalWeighting == "area":
+            return self._pointFluxArea(heatPlus, heatMinus, groups)
+        return self._pointFluxConsistent(heatPlus, heatMinus, groups)
+
+    def _groupLabels(self, groups) -> np.ndarray:
+        if groups is None:
+            return np.zeros(self.target.nCells, dtype=np.int64)
+        _, gl = np.unique(np.asarray(groups), return_inverse=True)
+        return gl.ravel()
+
+    def _pointFluxArea(self, heatPlus, heatMinus, groups) -> np.ndarray:
+        """Face-area weighted nodal flux: q_i = sum_f a_fi q_f / sum_f a_fi, corrected to conserve the heat."""
+        nP = self.target.nPoints
+        face, node, a = self._tributary()
+        trib = np.bincount(node, weights=a, minlength=nP)
+        used = trib > 0
+        gl = self._groupLabels(groups)
+        c = self._nodalRows(gl)
+        area = np.where(self.targetFaceAreas > 0, self.targetFaceAreas, 1.0)
+        out = np.zeros(nP)
+        idx = np.flatnonzero(used)
+        sub = SparseMatrix(c.row, np.searchsorted(idx, c.col), c.data, (c.shape[0], idx.size))
+        for heat, lb, ub in ((heatPlus, 0.0, np.inf), (heatMinus, -np.inf, 0.0)):
+            if not np.any(heat != 0):
+                continue
+            x0 = np.bincount(node, weights=a * (heat / area)[face], minlength=nP)[idx] / trib[idx]
+            d = np.bincount(gl[self._targetMask], weights=heat[self._targetMask], minlength=c.shape[0])
+            out[idx] += projectAffine(x0, trib[idx], sub, d, lb, ub).x
+        return out
+
+    def _pointFluxConsistent(self, heatPlus, heatMinus, groups) -> np.ndarray:
         tq = self._tq
         nP = self.target.nPoints
         # HRZ lumping: diagonal of the element mass matrices scaled to the element area
@@ -374,11 +551,7 @@ class SurfaceFluxMapper:
         lumpE = diagE * scale[cellOfEntry]
         lumped = np.bincount(tq.interp.col, weights=lumpE, minlength=nP)
         used = lumped > 0
-        if groups is None:
-            gl = np.zeros(self.target.nCells, dtype=np.int64)
-        else:
-            _, gl = np.unique(np.asarray(groups), return_inverse=True)
-            gl = gl.ravel()
+        gl = self._groupLabels(groups)
         c = self._massRows(gl)
         area = np.where(self.targetAreas > 0, self.targetAreas, 1.0)
         out = np.zeros(nP)

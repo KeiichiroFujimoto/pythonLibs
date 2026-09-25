@@ -75,6 +75,14 @@ res.nodalLoads                              # consistent nodal loads on the stru
 res.attach(mapper.target)                   # cell flux, heat in / out, nodal loads, nodal flux
 ```
 
+- **face-area weighting**: the heat of a source face is exactly q_f A_f, with the face
+  area of the source solver's convention (`sourceArea`: "vector" = magnitude of the
+  face-area vector as in finite-volume codes, "fan", "fe", or the solver's own face
+  areas as a cell array; "auto" = vector for linear faces, fe for quadratic faces).
+  The target flux is Q_t / A_t (`targetArea`, default "fe", consistent with the nodal
+  loads), and the nodal flux is the tributary-area (A_f / n_f) weighted average of the
+  adjacent face fluxes (`nodalWeighting="area"`). Quadrilaterals are split around
+  their centroid, so warped faces have no preferred diagonal
 - the source heat of every source triangle, split into its incoming (q > 0) and
   outgoing (q < 0) parts along the zero line of q, is distributed to the target
   facets in proportion to the integrals of q over their overlaps: incoming and
@@ -84,9 +92,11 @@ res.attach(mapper.target)                   # cell flux, heat in / out, nodal lo
 - `reconstruction="linear"` (cell data) uses a limited least-squares gradient that
   keeps the facet mean, the neighbour bounds and the sign: sharper coarse-to-fine
   transfer with the same conservation
-- `pointFlux=True` adds nodal flux values: lumped L2 projection corrected by the
-  conservative projection of `regressionHandler.constraints` (incoming and outgoing
-  parts separately with sign bounds, optional per-group heat constraints)
+- `pointFlux=True` adds nodal flux values: face-area weighted averages (or the
+  HRZ-lumped L2 projection with `nodalWeighting="consistent"`) corrected by the
+  conservative projection of `regressionHandler.constraints` so that
+  sum_i a_i q_i equals the heat (incoming and outgoing parts separately with sign
+  bounds, optional per-group heat constraints)
 - the overlap geometry is computed once; `map` can be called for every time step
 
 ## Energy-conserving mapping of layered 1-D profiles
