@@ -149,3 +149,16 @@ def test_conservationGroupsAndSeriesOutput(tmp_path):
     assert len(files) == 2
     back = readPvd(str(tmp_path / "temperature.pvd"))
     np.testing.assert_allclose(readVtu(back[1]["file"]).pointData["temperature"], res.temperature[1])
+
+
+def test_everyLayeredNodeGetsATemperature():
+    m = _slab(nz=4)
+    # an extra cell block without a layer label (e.g. another structural part) stays unmapped
+    m.cellData["layer"][:3] = 99
+    stations = _stations(_steep, times=(0.0, 10.0))
+    res = LayeredProfileMapper(m, stations, MATS, layers=[1, 2]).map()
+    T = res.temperature[-1]
+    layered = np.unique(np.concatenate([m.cell(c) for c in np.flatnonzero(m.cellData["layer"] != 99)]))
+    assert np.all(np.isfinite(T[layered]))
+    others = np.setdiff1d(np.unique(np.concatenate([m.cell(c) for c in range(3)])), layered)
+    assert np.all(np.isnan(T[others]))
