@@ -10,7 +10,7 @@ fluxes (conserving incoming and outgoing heat) and layered 1-D profiles
     fm.invoke("mapSurfaceFlux", sourceMesh="flow", targetMesh="structure", arrayName="q",
               outputFile="mappedFlux.vtu")
     fm.invoke("mapLayeredProfiles", targetMesh="structure", stationsFile="stations.json",
-              materials={"1": {"density": 250, "cp": [[300, 1000], [2000, 1800]]}}, outputFile="T.pvd")
+              materials="materials.json", outputFile="T.pvd")
 
 All results are JSON-compatible dicts with the conservation diagnostics.
 
@@ -28,6 +28,7 @@ from pythonLibs.tool.decorators import secure_expose
 from pythonLibs.tool.toolBaseSecured import toolBaseSecured
 
 from pythonLibs.fieldMapping.LayeredProfileMapper import LayeredProfileMapper
+from pythonLibs.fieldMapping.StationIO import loadMaterials, loadStations
 from pythonLibs.fieldMapping.SurfaceFluxMapper import SurfaceFluxMapper
 from pythonLibs.fieldMapping.io.Vtu import readPvd, readVtu, writePvd, writeVtu
 from pythonLibs.fieldMapping.mesh.Elements import TYPE_NAMES
@@ -96,12 +97,13 @@ class FieldMappingHandler(toolBaseSecured):
         "nodalWeighting": "Nodal flux: 'area' (tributary face area) or 'consistent' (finite-element mass)",
         "sourceSeries": "Optional .pvd time series of the source (same geometry at every time)",
         "stations": "List of stations {position, time, depth, temperature, interfaces, name}",
-        "stationsFile": "JSON file with the stations list",
-        "materials": "{layer label: {density, cp (number or [[T, cp], ...])}} of the 3-D layers",
+        "stationsFile": "JSON station manifest (inline data or CSV temperature tables, see StationIO)",
+        "materials": "{layer label: {density, cp (number or [[T, cp], ...])}} of the 3-D layers, or a JSON file",
         "layerArray": "Cell array with the layer labels",
         "layers": "Layer labels from the outer surface inward",
-        "weights": "Station interpolation: idw, kriging or nearest",
-        "depthMode": "layerNormalized or depth",
+        "weights": "Station interpolation: kriging (default), idw or nearest",
+        "lengthscale": "Kriging correlation length ('auto': maximum likelihood on the stations)",
+        "depthMode": "surfaceAnchored (default), layerNormalized or depth",
         "conservation": "Energy groups: stationLayer, layer, global or cell",
         "times": "Output times (default: all station times)",
         "fmt": "VTU format: appended, binary or ascii",
@@ -243,22 +245,26 @@ class FieldMappingHandler(toolBaseSecured):
     @secure_expose(alias="mapLayeredProfiles", category=_CATEGORY)
     def mapLayeredProfiles(self, targetMesh: str, materials: Any, stations: Optional[Any] = None,
                            stationsFile: Optional[str] = None, layerArray: str = "layer",
-                           layers: Optional[list] = None, weights: str = "idw", depthMode: str = "layerNormalized",
-                           conservation: str = "stationLayer", times: Optional[list] = None,
+                           layers: Optional[list] = None, weights: str = "kriging", lengthscale: Any = "auto",
+                           depthMode: str = "surfaceAnchored", conservation: str = "stationLayer", times: Optional[list] = None,
                            outputFile: Optional[str] = None, order: int = 4, referenceOrder: int = 10) -> dict:
         """Map layered 1-D temperature profiles onto a 3-D mesh with exact thermal energy conservation."""
         mesh = self.getMesh(targetMesh)
         if stationsFile:
-            with open(stationsFile, "r", encoding="utf-8") as f:
-                stations = json.load(f)
+            stations = loadStations(stationsFile)
             self.addExecutionInputFiles(file_paths=[stationsFile])
         stations = _json(stations)
         if not stations:
             raise ValueError("give stations or stationsFile")
+        if isinstance(materials, str) and os.path.isfile(materials):
+            self.addExecutionInputFiles(file_paths=[materials])
+            materials = loadMaterials(materials)
         mats = {_labelKey(k): v for k, v in _json(materials).items()}
+        if isinstance(lengthscale, str) and lengthscale != "auto":
+            lengthscale = float(lengthscale)
         lay = [_labelKey(v) for v in _json(layers)] if layers is not None else None
         mapper = LayeredProfileMapper(mesh, stations, mats, layerArray=layerArray, layers=lay, weights=weights,
-                                      depthMode=depthMode, conservation=conservation, order=order,
+                                      lengthscale=lengthscale, depthMode=depthMode, conservation=conservation, order=order,
                                       referenceOrder=referenceOrder)
         res = mapper.map(_json(times))
         files = []
@@ -268,10 +274,12 @@ class FieldMappingHandler(toolBaseSecured):
         last = UnstructuredMesh(mesh.points, mesh.cellTypes, mesh.connectivity, mesh.offsets, mesh.polyFaces,
                                 dict(mesh.pointData), dict(mesh.cellData))
         last.pointData["temperature"] = res.temperature[-1]
+        if res.cellTemperature is not None:
+            last.cellData["temperature"] = res.cellTemperature[-1]
         self._meshes[f"{targetMesh}:temperature"] = last
         compact = [{k: d[k] for k in ("time", "converged", "iterations", "maxRelativeEnergyError",
                                       "maxRelativeNodalEnergyError", "maxCorrection", "nodesAtBounds")}
                    for d in res.diagnostics]
         return _plain({"targetMesh": targetMesh, "resultMesh": f"{targetMesh}:temperature",
-                       "nGroups": mapper.nGroups, "nStations": len(mapper.stations), "outputFile": outputFile,
+                       "nGroups": mapper.nGroups, "lengthscale": mapper.lengthscale, "nStations": len(mapper.stations), "outputFile": outputFile,
                        "summary": res.summary(), "steps": compact})

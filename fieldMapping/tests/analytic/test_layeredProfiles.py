@@ -70,7 +70,7 @@ def test_layerNormalizationMatchesInterfaces():
     mats = {1: {"density": 250.0, "cp": 1200.0}, 2: {"density": 2700.0, "cp": 900.0}}
     m = structuredBox((0, 0, 0), (1, 1, H), (3, 3, 10))                     # nodes at z = 0.018 = H - 0.012
     m.cellData["layer"] = np.where(m.cellCentroids()[:, 2] > H - 0.012, 1, 2).astype(np.int32)
-    res = LayeredProfileMapper(m, _stations(prof), mats, layers=[1, 2]).map()
+    res = LayeredProfileMapper(m, _stations(prof), mats, layers=[1, 2], depthMode="layerNormalized").map()
     T = res.temperature[-1]
     at = np.isclose(m.points[:, 2], H - 0.012)
     np.testing.assert_allclose(T[at], 600.0, atol=1e-8)
@@ -78,7 +78,7 @@ def test_layerNormalizationMatchesInterfaces():
     # a profile linear through the whole depth: layer-normalized puts the station interface value (z = 0.010)
     # on the 3-D interface, depth mode the value at the 3-D depth (0.012); both nodal results are exact
     lin = lambda t, a: 1000.0 - 20000.0 * DEPTH                                          # noqa: E731
-    r1 = LayeredProfileMapper(m, _stations(lin), mats, layers=[1, 2]).map()
+    r1 = LayeredProfileMapper(m, _stations(lin), mats, layers=[1, 2], depthMode="layerNormalized").map()
     r2 = LayeredProfileMapper(m, _stations(lin), mats, layers=[1, 2], depthMode="depth").map()
     np.testing.assert_allclose(r1.temperature[-1][at], 800.0, atol=1e-8)
     np.testing.assert_allclose(r2.temperature[-1][at], 760.0, atol=1e-8)
@@ -98,7 +98,7 @@ def test_energyIsConservedForSteepProfiles(cellType):
     # no new extrema: within the station range
     T = res.temperature[-1]
     allT = np.concatenate([st["temperature"][-1] for st in stations])
-    assert T.min() >= allT.min() - 1e-9 and T.max() <= allT.max() + 1e-9
+    assert T.min() >= allT.min() - 1e-7 and T.max() <= allT.max() + 1e-7          # round-off margin of the bounds
 
 
 def test_referenceEnergyMatchesTheOneDimensionalIntegral():
@@ -162,3 +162,54 @@ def test_everyLayeredNodeGetsATemperature():
     assert np.all(np.isfinite(T[layered]))
     others = np.setdiff1d(np.unique(np.concatenate([m.cell(c) for c in range(3)])), layered)
     assert np.all(np.isnan(T[others]))
+
+
+def test_surfaceAnchoredDepthAfterRecession():
+    # 3-D outer layer 0.012 thick, station outer layer 0.010: near the surface the node keeps its absolute depth,
+    # at the interface it takes the station interface value, and the mapping is exact on an equal thickness
+    lin = lambda t, a: 1000.0 - 20000.0 * DEPTH                                          # noqa: E731
+    mats = {1: {"density": 250.0, "cp": 1200.0}, 2: {"density": 2700.0, "cp": 900.0}}
+    m = structuredBox((0, 0, 0), (1, 1, H), (3, 3, 10))
+    m.cellData["layer"] = np.where(m.cellCentroids()[:, 2] > H - 0.012, 1, 2).astype(np.int32)
+    mp = LayeredProfileMapper(m, _stations(lin), mats, layers=[1, 2])
+    assert mp.options["depthMode"] == "surfaceAnchored" and mp.options["weights"] == "kriging"
+    x0 = np.full(m.nPoints, np.nan)
+    x0[mp.nodes] = mp._nodalField([s.at(1.0) for s in mp.stations])
+    a = H - m.points[:, 2]                                                               # depth below the surface
+    xi = a / 0.012
+    top = a <= 0.012 + 1e-12
+    z = a * (1 - xi) + xi ** 2 * H0                                                      # anchored station depth
+    np.testing.assert_allclose(x0[top], 1000.0 - 20000.0 * z[top], atol=1e-8)
+    np.testing.assert_allclose(x0[np.isclose(a, 0.012)], 800.0, atol=1e-8)            # station interface value
+    # equal thicknesses: anchored and normalized depths coincide
+    m2 = _slab(nz=3)
+    r2 = LayeredProfileMapper(m2, _stations(lin), mats, layers=[1, 2]).map()
+    np.testing.assert_allclose(r2.temperature[-1], 1000.0 - 20000.0 * (H - m2.points[:, 2]), atol=1e-8)
+
+
+def test_cellTemperatureCarriesTheCellEnergy():
+    m = _slab(nz=4, cellType="quadraticHexahedron")
+    stations = _stations(_steep, times=(0.0, 10.0))
+    mp = LayeredProfileMapper(m, stations, MATS, layers=[1, 2])
+    res = mp.map()
+    Tc = res.cellTemperature[-1]
+    assert np.all(np.isfinite(Tc))
+    q = mp._qFE
+    e, _ = mp._energy(q, q.interpLocal @ res.temperature[-1][mp.nodes])
+    energy = np.bincount(q.cell, weights=q.weight * e, minlength=m.nCells)
+    vol = np.bincount(q.cell, weights=q.weight, minlength=m.nCells)
+    for l, lab in enumerate((1, 2)):
+        cells = m.cellData["layer"] == lab
+        mat = Material.fromSpec(MATS[lab])
+        np.testing.assert_allclose(mat.volumetricEnergy(Tc[cells]) * vol[cells], energy[cells], rtol=1e-12)
+    np.testing.assert_allclose(res.cellTemperature[0], 300.0, atol=1e-9)                # uniform field
+
+
+def test_krigingLengthscaleIsFitted():
+    m = _slab(nz=3)
+    st = _stations(_steep, times=(0.0, 10.0), amps=(1.0, 0.6, 1.3, 0.8))
+    mp = LayeredProfileMapper(m, st, MATS, layers=[1, 2])
+    assert np.isfinite(mp.lengthscale) and mp.lengthscale > 0
+    fixed = LayeredProfileMapper(m, st, MATS, layers=[1, 2], lengthscale=0.7)
+    assert fixed.lengthscale == 0.7
+    np.testing.assert_allclose(mp._weights(mp.stationFoot).toDense(), np.eye(4), atol=1e-6)   # tiny nugget

@@ -5,16 +5,24 @@ model was solved), each with a depth grid, the depths of its layer
 interfaces and temperature histories; and a 3-D mesh whose cells carry a
 layer label (outermost layer first).
 
-1. Layer-normalized depth. For a node in layer l, xi = a / (a + b) with a, b
-   its distances to the upper and lower surfaces of that layer in the 3-D
-   mesh (outer surface, material interfaces, inner surface). Each station
-   maps xi to its own depth in the same layer,
-   z_k = b_k,l + xi (b_k,l+1 - b_k,l), so layer boundaries always match even
-   when the 3-D and 1-D thicknesses differ (e.g. after surface recession).
-   ``depthMode="depth"`` uses the distance to the outer surface instead.
+1. Depth coordinate. For a node in layer l, xi = a / (a + b) with a, b its
+   distances to the upper and lower surfaces of that layer in the 3-D mesh
+   (outer surface, material interfaces, inner surface). Each station maps the
+   node to its own depth in the same layer so that layer boundaries always
+   match, even when the 3-D and 1-D thicknesses differ (surface recession):
+   - "surfaceAnchored" (default): in the outer layer
+     z_k = a (1 - xi) + xi^2 d_k (d_k the station's outer-layer thickness):
+     the absolute depth below the current surface near the surface (where the
+     heating sets the profile), the station's interface at xi = 1; inner
+     layers use the layer-normalized depth. Falls back to the normalized depth
+     where the station layer is less than half as thick as the local one.
+   - "layerNormalized": z_k = b_k,l + xi (b_k,l+1 - b_k,l) in every layer.
+   - "depth": the distance to the outer surface.
 2. Surface interpolation between stations with weights w_k(x) of the node's
-   foot point on the outer surface: inverse distance (positive, default),
-   ordinary Kriging (smooth) or nearest station.
+   foot point on the outer surface: ordinary Kriging (default; Matern 5/2 with
+   the correlation length fitted to the stations' peak surface temperatures),
+   inverse distance or nearest station. The same weights are used at every
+   depth of a column, so the through-thickness profile stays smooth.
 3. Reference energy. The interpolated continuous field
    T*(x) = sum_k w_k(x) T_k(z_k(xi(x))) is integrated with a high-order rule,
    E_ref,g = int_g rho e(T*) dV, per conservation group g (station tributary
@@ -26,8 +34,9 @@ layer label (outermost layer first).
    (nonlinear through cp(T); sequential linearization), with every node kept
    inside the range of the station values around its depth (no new extrema).
 
-The result per time step: nodal temperatures, and per group the reference,
-nodal-interpolation and final energies (relative errors of the final energy
+The result per time step: nodal temperatures, cell temperatures (the value
+whose energy equals the cell's finite-element energy), and per group the
+reference, nodal-interpolation and final energies (relative errors of the final energy
 are at round-off level).
 """
 from __future__ import annotations
@@ -103,6 +112,7 @@ class LayeredMapResult:
     times: np.ndarray
     temperature: np.ndarray               # (nt, nPoints), NaN outside the layered cells
     diagnostics: list = field(default_factory=list)
+    cellTemperature: Optional[np.ndarray] = None     # (nt, nCells): energy-equivalent cell values
 
     def summary(self) -> dict:
         errs = [d["maxRelativeEnergyError"] for d in self.diagnostics]
@@ -123,11 +133,12 @@ class LayeredProfileMapper:
         layerArray:    name of the cell array with the layer labels
         layers:        labels ordered from the outer surface inward (default: sorted labels present in materials)
         outerSurface:  optional surface mesh of the heated surface (default: detected, see ``_outerFaces``)
-        weights:       "idw" (default), "kriging" or "nearest"
+        weights:       "kriging" (default), "idw" or "nearest"
         nearest:       number of stations used by "idw"
         power:         inverse-distance power
-        lengthscale:   Kriging correlation length (default: twice the median station spacing)
-        depthMode:     "layerNormalized" (default) or "depth"
+        lengthscale:   Kriging correlation length (default "auto": maximum likelihood on the stations'
+                       peak surface temperatures; a number fixes it)
+        depthMode:     "surfaceAnchored" (default), "layerNormalized" or "depth"
         conservation:  "stationLayer" (default), "layer", "global" or "cell"
         order:         quadrature order of the finite-element energy
         referenceOrder: quadrature order of the reference energy of the continuous field
@@ -137,13 +148,13 @@ class LayeredProfileMapper:
 
     def __init__(self, mesh: UnstructuredMesh, stations: Sequence, materials: dict, layerArray: str = "layer",
                  layers: Optional[Sequence] = None, outerSurface: Optional[UnstructuredMesh] = None,
-                 weights: str = "idw", nearest: int = 4, power: float = 2.0, lengthscale: Optional[float] = None,
-                 depthMode: str = "layerNormalized", conservation: str = "stationLayer", order: int = 4,
+                 weights: str = "kriging", nearest: int = 4, power: float = 2.0, lengthscale="auto",
+                 depthMode: str = "surfaceAnchored", conservation: str = "stationLayer", order: int = 4,
                  referenceOrder: int = 10, bounds: bool = True, maxAngle: float = 60.0) -> None:
         if weights not in ("idw", "kriging", "nearest"):
             raise ValueError("weights must be idw, kriging or nearest")
-        if depthMode not in ("layerNormalized", "depth"):
-            raise ValueError("depthMode must be layerNormalized or depth")
+        if depthMode not in ("surfaceAnchored", "layerNormalized", "depth"):
+            raise ValueError("depthMode must be surfaceAnchored, layerNormalized or depth")
         if conservation not in ("stationLayer", "layer", "global", "cell"):
             raise ValueError("conservation must be stationLayer, layer, global or cell")
         self.mesh = mesh
@@ -263,6 +274,7 @@ class LayeredProfileMapper:
         # station positions snapped to the outer surface
         spos = np.array([s.position for s in self.stations])
         _, self.stationFoot, _, _ = self._outer.closest(spos)
+        self.lengthscale = self._fitLengthscale() if self.options["weights"] == "kriging" else None
         self._nodeWeights = self._weights(foot)                       # SparseMatrix (nNodes, nStations)
         # layer-normalized depth per layer (NaN where the node is not in the layer)
         local = {int(n): i for i, n in enumerate(nodes)}
@@ -311,10 +323,7 @@ class LayeredProfileMapper:
             w /= w.sum(axis=1, keepdims=True)
             return SparseMatrix(np.repeat(np.arange(m), k), idx.ravel(), w.ravel(), (m, ns))
         # ordinary Kriging with a Matern 5/2 correlation
-        ell = self.options["lengthscale"]
-        if ell is None:
-            dd = NeighborSearch(spos).query(spos, 2)[0][:, 1]
-            ell = 2.0 * float(np.median(dd))
+        ell = self.lengthscale
         corr = lambda r: (1 + np.sqrt(5) * r + 5 * r * r / 3) * np.exp(-np.sqrt(5) * r)    # noqa: E731
         kss = corr(np.linalg.norm(spos[:, None] - spos[None], axis=2) / ell) + 1e-10 * np.eye(ns)
         big = np.block([[kss, np.ones((ns, 1))], [np.ones((1, ns)), np.zeros((1, 1))]])
@@ -327,6 +336,29 @@ class LayeredProfileMapper:
         w = np.vstack(rows)
         r, c = np.nonzero(np.abs(w) > 1e-14)
         return SparseMatrix(r, c, w[r, c], (m, ns))
+
+    def _fitLengthscale(self) -> float:
+        """Correlation length for the Kriging weights (fixed, or maximum likelihood on the stations)."""
+        spos = self.stationFoot
+        opt = self.options["lengthscale"]
+        dd = NeighborSearch(spos).query(spos, 2)[0][:, 1] if spos.shape[0] > 1 else np.ones(1)
+        fallback = 2.0 * float(np.median(dd))
+        if opt not in (None, "auto"):
+            return float(opt)
+        if spos.shape[0] < 4:
+            return fallback
+        # peak surface temperature of every station: the quantity whose spatial pattern the weights carry
+        y = np.array([float(np.max(s.temperature[:, 0])) for s in self.stations])
+        if np.ptp(y) <= 1e-9 * max(1.0, float(np.abs(y).max())):
+            return fallback
+        try:
+            from pythonLibs.regressionHandler import KrigingModel
+            m = KrigingModel(corr={"type": "matern52", "ard": False}, poly="constant", normalize=False).fit(spos, y)
+            ell = float(np.exp(m._kp[0]))
+        except Exception:
+            return fallback
+        extent = float(np.max(np.linalg.norm(spos - spos.mean(axis=0), axis=1))) * 2 + 1e-300
+        return float(np.clip(ell, 0.5 * float(np.min(dd)), 10.0 * extent)) if np.isfinite(ell) else fallback
 
     # ------------------------------------------------------------------ quadrature and groups
     def _buildQuadrature(self) -> None:
@@ -390,9 +422,21 @@ class LayeredProfileMapper:
 
     # ------------------------------------------------------------------ evaluation
     def _stationDepth(self, k: int, xi: np.ndarray, depth: np.ndarray, layer: np.ndarray, interfaces: np.ndarray):
-        """Station-k depth of points with layer-normalized xi (NaN -> depth mode) in ``layer``."""
+        """Station-k depth of points with layer-normalized xi (NaN -> depth mode) in ``layer``.
+
+        ``depth`` is the distance of the point to the outer surface.
+        """
         lo, hi = interfaces[layer], interfaces[layer + 1]
-        z = np.where(np.isnan(xi), depth, lo + np.nan_to_num(xi) * (hi - lo))
+        x = np.nan_to_num(xi)
+        z = lo + x * (hi - lo)
+        if self.options["depthMode"] == "surfaceAnchored":
+            # outer layer: absolute depth near the surface, station interface at xi = 1
+            dk = hi - lo
+            local = np.where(x > 1e-12, depth / np.maximum(x, 1e-12), dk)          # local outer-layer thickness
+            anchored = depth * (1.0 - x) + x * x * dk
+            use = (layer == 0) & (dk >= 0.5 * local)                                 # monotone in xi
+            z = np.where(use, anchored, z)
+        z = np.where(np.isnan(xi), depth, z)
         return np.clip(z, interfaces[0], interfaces[-1])
 
     def _field(self, W: SparseMatrix, xi, depth, layer, profiles) -> np.ndarray:
@@ -467,6 +511,7 @@ class LayeredProfileMapper:
         qF, qR = self._qFE, self._qRef
         G = self.nGroups
         out = np.full((times.size, self.mesh.nPoints), np.nan)
+        cellOut = np.full((times.size, self.mesh.nCells), np.nan)
         diags = []
         prev = None
         for it, t in enumerate(times):
@@ -502,6 +547,7 @@ class LayeredProfileMapper:
             res = projectNonlinear(x0, lumped, constraint, target, lb, ub, tol=tol, start=prev, scale=scale)
             prev = res.x
             out[it, self.nodes] = res.x
+            cellOut[it] = self._cellTemperature(res.x)
             final = constraint(res.x)[0]
             diags.append({"time": float(t), "converged": bool(res.converged), "iterations": res.iterations,
                           "referenceEnergy": target.tolist(), "nodalInterpolationEnergy": nodalEnergy.tolist(),
@@ -510,7 +556,21 @@ class LayeredProfileMapper:
                           "maxRelativeNodalEnergyError": float(np.max(np.abs(nodalEnergy - target) / scale)),
                           "maxCorrection": float(np.max(np.abs(res.x - x0))),
                           "nodesAtBounds": int(res.atBounds.sum()) if lb is not None else 0})
-        return LayeredMapResult(times, out, diags)
+        return LayeredMapResult(times, out, diags, cellOut)
+
+    def _cellTemperature(self, T: np.ndarray) -> np.ndarray:
+        """Per cell the temperature whose energy rho e(T_c) V_c equals the cell's finite-element energy."""
+        qF = self._qFE
+        nC = self.mesh.nCells
+        e, _ = self._energy(qF, qF.interpLocal @ T)
+        energy = np.bincount(qF.cell, weights=qF.weight * e, minlength=nC)
+        vol = np.bincount(qF.cell, weights=qF.weight, minlength=nC)
+        out = np.full(nC, np.nan)
+        for l, mat in enumerate(self.materials):
+            cells = self.cells[self.cellLayer[self.cells] == l]
+            if cells.size:
+                out[cells] = mat.inverseEnergy(energy[cells] / (mat.density * vol[cells]))
+        return out
 
     # ------------------------------------------------------------------ output
     def writeSeries(self, result: LayeredMapResult, path: str, name: str = "temperature") -> list:
@@ -523,6 +583,8 @@ class LayeredProfileMapper:
             m = UnstructuredMesh(self.mesh.points, self.mesh.cellTypes, self.mesh.connectivity, self.mesh.offsets,
                                  self.mesh.polyFaces, dict(self.mesh.pointData), dict(self.mesh.cellData))
             m.pointData[name] = result.temperature[k]
+            if result.cellTemperature is not None:
+                m.cellData[name] = result.cellTemperature[k]
             m.cellData["conservationGroup"] = self.cellGroup
             f = f"{base}_{k:04d}.vtu"
             writeVtu(f, m)

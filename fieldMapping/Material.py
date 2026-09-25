@@ -63,6 +63,17 @@ class Material:
         inside = self._eKnot[k] + c0 * dt + 0.5 * slope * dt * dt
         return np.where(below, c[0] * (T - t[0]), np.where(above, self._eKnot[-1] + c[-1] * (T - t[-1]), inside))
 
+    def inverseEnergy(self, energy, tol: float = 1e-12) -> np.ndarray:
+        """Temperature with e(T) = energy (Newton; e is strictly increasing)."""
+        e = np.asarray(energy, dtype=float)
+        T = self.table[0, 0] + e / self.table[0, 1]
+        for _ in range(60):
+            step = (self.energy(T) - e) / self.cp(T)
+            T = T - step
+            if np.all(np.abs(step) <= tol * np.maximum(1.0, np.abs(T))):
+                break
+        return T
+
     def volumetricEnergy(self, temperature) -> np.ndarray:
         return self.density * self.energy(temperature)
 
