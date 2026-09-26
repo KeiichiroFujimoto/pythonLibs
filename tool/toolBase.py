@@ -2,9 +2,6 @@ from pythonLibs.dictHandler import DictBase, DictBaseHandler, DictHandler
 
 from pythonLibs.docstringHandler import DocstringHandler
 from pythonLibs.fileHandler import FilePathHandler
-# pythonLibs.fileWatcher は executionStart/executionEnd の作業ディレクトリ
-# スナップショット用にのみ使用するため lazy import（SDK 閉包から fileWatcher
-# と推移先 processHandler を外すため）。
 
 import json
 import ast
@@ -272,6 +269,7 @@ class toolBase:
       return res
 
   def executionStart(self,dirPathWork=None):
+      # Imported here, not at module level: keeps fileWatcher / processHandler out of the SDK import closure.
       from pythonLibs.fileWatcher import FileWatcher  # lazy
       self.fileStatusPrev = FileWatcher.getLastModifiedDict_Base(path=dirPathWork)
 
