@@ -14,10 +14,10 @@ class FileManipulatorBase:
 
   @staticmethod
   def checkDirectoryNameType(name: str) -> bool:
-    # YYYY_MM_DD（e.g. 2025_08_14）
+    # YYYY_MM_DD (e.g. 2025_08_14)
     pattern1 = r'^(\d{4})_(\d{2})_(\d{2})(?:_.+)?$'
     
-    # YYYY_MM_DD_HH_MM_SS（e.g. 2025_08_14_11_13_44）
+    # YYYY_MM_DD_HH_MM_SS (e.g. 2025_08_14_11_13_44)
     pattern2 = r'^(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})(?:_.+)?$'
     
     if bool(re.match(pattern2, name)):
@@ -35,7 +35,7 @@ class FileManipulatorBase:
     ]
     for fmt in formats:
         try:
-            # ラベルが付いている場合は除去
+            # Drop a trailing label if present
             base = "_".join(directoryName.split("_")[:fmt.count('%')])
             return datetime.strptime(base, fmt)
         except ValueError:

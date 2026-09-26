@@ -1,25 +1,25 @@
-# ServiceREPL — 使い方ドキュメント
+# ServiceREPL — Usage
 
-## 概要
+## Overview
 
-`ServiceREPL` は `@secure_expose` デコレータで公開された任意の `executionBaseSecured` サービスに対して、**ゼロ追加コスト**で対話的 CLI を自動生成するフレームワーク。
+`ServiceREPL` is a framework that generates an interactive CLI, at **zero additional cost**, for any `executionBaseSecured` service whose methods are exposed with the `@secure_expose` decorator.
 
-`toolBaseSecured` は互換名として引き続き使えますが、新規コードでは `executionBaseSecured` を推奨します。
+`toolBaseSecured` still works as a compatibility name, but `executionBaseSecured` is recommended for new code.
 
 ```
-@secure_expose  →  5つの出口が自動生成
-  ├── Web API        buildCatalog()  → /api/commands
-  ├── LLM Agent      toLangchainTools() → StructuredTool[]
-  ├── CLI/REPL       toCLI()         → ServiceREPL        ← これ
+@secure_expose  ->  five outlets generated automatically
+  ├── Web API        buildCatalog()  -> /api/commands
+  ├── LLM Agent      toLangchainTools() -> StructuredTool[]
+  ├── CLI/REPL       toCLI()         -> ServiceREPL        <- this one
   ├── GUI            Command Palette (Cmd+K)
-  └── Multi-Service  CompositeBackend → 複数サービス統合
+  └── Multi-Service  CompositeBackend -> several services combined
 ```
 
 ---
 
-## クイックスタート
+## Quick start
 
-### 1. ゼロコスト CLI（コード追加 0 行）
+### 1. Zero-cost CLI (0 lines of additional code)
 
 ```python
 from pythonLibs.tool.executionBaseSecured import executionBaseSecured
@@ -46,12 +46,12 @@ class MyService(executionBaseSecured):
         """Add two numbers."""
         return {"result": x + y}
 
-# これだけで CLI が使える
+# This alone gives a working CLI
 svc = MyService()
 svc.toCLI().run()
 ```
 
-実行:
+Run:
 ```
 $ python my_service.py
   2 commands available. Type 'help' for usage.
@@ -73,17 +73,17 @@ service> quit
 Bye.
 ```
 
-### 2. リモートサーバに接続（スタンドアロン CLI）
+### 2. Connect to a remote server (standalone CLI)
 
 ```bash
-# FiTsZ サーバ（port 8322）に接続
+# Connect to the FiTsZ server (port 8322)
 python3.12 -m pythonLibs.tool http://localhost:8322
 
-# プロンプトをカスタマイズ
+# Customize the prompt
 python3.12 -m pythonLibs.tool http://localhost:8322 --prompt "fitsz> "
 ```
 
-### 3. 複数サービスを統合
+### 3. Combine several services
 
 ```python
 from pythonLibs.tool import ServiceREPL, CompositeBackend
@@ -93,32 +93,32 @@ svc_b = ServiceB()
 
 backend = CompositeBackend([svc_a, svc_b])
 ServiceREPL(backend, prompt="combined> ").run()
-# → 両サービスのコマンドが一つの REPL で使える
+# -> the commands of both services are available in one REPL
 ```
 
 ---
 
-## アーキテクチャ
+## Architecture
 
 ### Backend Strategy Pattern
 
 ```
 ServiceBackend (Protocol)
-  ├── LocalBackend(service)      直接 Python 呼び出し
+  ├── LocalBackend(service)      direct Python calls
   ├── RemoteBackend(url)         HTTP /api/commands
-  └── CompositeBackend([svc...]) カタログ合成 + 自動振り分け
+  └── CompositeBackend([svc...]) merged catalog + automatic dispatch
 ```
 
-| Backend | 用途 | 依存 |
+| Backend | Use | Dependencies |
 |---------|------|------|
-| `LocalBackend` | テスト、スクリプト、サーバ不要 | なし |
-| `RemoteBackend` | 稼働中サーバに接続 | urllib のみ |
-| `CompositeBackend` | 複数サービスを1つの REPL に | なし |
+| `LocalBackend` | tests, scripts, no server needed | none |
+| `RemoteBackend` | connect to a running server | urllib only |
+| `CompositeBackend` | several services in one REPL | none |
 
-### カタログが中間表現
+### The catalog is the intermediate representation
 
 ```python
-# buildCatalog() の出力（全インターフェースの共通ソース）
+# Output of buildCatalog() (the common source of every interface)
 {
     "id": "createEntity",
     "method": "create_entity",
@@ -133,102 +133,102 @@ ServiceBackend (Protocol)
 
 ---
 
-## 組み込みコマンド
+## Built-in commands
 
-| コマンド | 説明 |
+| Command | Description |
 |----------|------|
-| `commands [category]` | コマンド一覧（カテゴリでフィルタ可） |
-| `describe <command>` | パラメータ名・型・必須・デフォルト・説明を表示 |
-| `<command> key=value ...` | 任意コマンドを実行 |
-| `help` | ヘルプ表示 |
-| `refresh` | カタログを再取得 |
-| `quit` / `exit` | 終了 |
+| `commands [category]` | List commands (optionally filtered by category) |
+| `describe <command>` | Show parameter names, types, required flags, defaults and descriptions |
+| `<command> key=value ...` | Run any command |
+| `help` | Show help |
+| `refresh` | Fetch the catalog again |
+| `quit` / `exit` | Exit |
 
 ---
 
-## key=value パーサ
+## key=value parser
 
-### 基本構文
+### Basic syntax
 
 ```
 command name=value stereotype=Block count=5
 ```
 
-### 型変換（カタログ駆動）
+### Type conversion (catalog-driven)
 
-| カタログ型 | 入力例 | 変換結果 |
+| Catalog type | Input | Result |
 |-----------|--------|---------|
 | `string` | `name=Sensor` | `"Sensor"` |
-| `string` | `name="Heat Exchanger"` | `"Heat Exchanger"` (クォート除去) |
+| `string` | `name="Heat Exchanger"` | `"Heat Exchanger"` (quotes removed) |
 | `integer` | `count=42` | `42` (int) |
 | `number` | `ratio=3.14` | `3.14` (float) |
 | `boolean` | `flag=true` | `True` |
 | `object` | `pos={"x":100,"y":200}` | `{"x": 100, "y": 200}` (dict) |
 | `array` | `ids=[1,2,3]` | `[1, 2, 3]` (list) |
 
-### JSON の扱い
+### JSON handling
 
-`shlex.split()` は JSON のクォートを壊すため、カスタム `_tokenize_kv()` を使用。
-ブレース深度を追跡し、`{...}` / `[...]` 内のスペースやクォートを保持する。
+`shlex.split()` breaks JSON quoting, so a custom `_tokenize_kv()` is used.
+It tracks brace depth and keeps spaces and quotes inside `{...}` / `[...]`.
 
 ---
 
-## Tab 補完
+## Tab completion
 
-| 入力位置 | 補完候補 |
+| Cursor position | Candidates |
 |----------|---------|
-| 行頭 | コマンド名 (builtin + catalog + custom) |
-| `commands ` | カテゴリ名 |
-| `describe ` | コマンド名 |
-| `createEntity ` | パラメータ名 (`name=`, `stereotype=`) |
-| (サブクラス) | `extra_completions()` で自由に拡張 |
+| start of line | command names (builtin + catalog + custom) |
+| `commands ` | category names |
+| `describe ` | command names |
+| `createEntity ` | parameter names (`name=`, `stereotype=`) |
+| (subclass) | extend freely with `extra_completions()` |
 
-readline / libedit 両対応（macOS の libedit を自動検出）。
+Works with both readline and libedit (macOS libedit is detected automatically).
 
 ---
 
-## サブクラスで拡張
+## Extending with a subclass
 
-6つの拡張フック:
+Six extension hooks:
 
 ```python
 class MyREPL(ServiceREPL):
 
     def on_connect(self) -> str | None:
-        """カタログ読み込み後に呼ばれる。バナー文字列を返す。"""
+        """Called after the catalog is loaded. Returns a banner string."""
         return f"Connected! {len(self._catalog)} operations."
 
     def on_refresh(self) -> str | None:
-        """refresh 後に呼ばれる。"""
+        """Called after refresh."""
         return None
 
     def custom_commands(self) -> dict[str, Callable]:
-        """ドメイン固有コマンドを登録する。"""
+        """Register domain-specific commands."""
         return {
             "show": self._cmd_show,
             "list": self._cmd_list,
         }
 
     def extra_completions(self, line: str, text: str) -> list[str] | None:
-        """ドメイン固有の Tab 補完。None で汎用にフォールスルー。"""
+        """Domain-specific tab completion. None falls through to the generic one."""
         if line.startswith("show "):
             return [n for n in self.entity_names if n.startswith(text)]
-        return None  # フォールスルー
+        return None  # fall through
 
     def format_result(self, command: str, result: Any) -> str | None:
-        """出力フォーマットのカスタマイズ。None でデフォルト JSON。"""
+        """Customize the output format. None gives the default JSON."""
         if command == "getItems":
             return "\n".join(f"  {k}: {v}" for k, v in result["items"].items())
         return None
 
     def custom_prompt(self) -> str:
-        """動的プロンプト。"""
+        """Dynamic prompt."""
         return f"{self.current_project}> "
 
     def implicit_command(self, line: str) -> bool:
-        """未知入力の処理。True=処理済み、False=エラー表示。"""
+        """Handle unknown input. True = handled, False = show an error."""
         if "=" in line and not line.split()[0] in self._cmd_index:
-            # 暗黙の export 構文
+            # implicit export syntax
             self._handle_export(line)
             return True
         return False
@@ -236,79 +236,79 @@ class MyREPL(ServiceREPL):
 
 ---
 
-## API リファレンス
+## API reference
 
-### クラス
+### Classes
 
-| クラス | 説明 |
+| Class | Description |
 |--------|------|
-| `ServiceREPL(backend, *, prompt=, banner=)` | 汎用 REPL |
-| `LocalBackend(service, category_map=)` | 直接呼び出しバックエンド |
-| `RemoteBackend(base_url)` | HTTP バックエンド |
-| `CompositeBackend(services, category_maps=)` | 複数サービス合成 |
+| `ServiceREPL(backend, *, prompt=, banner=)` | Generic REPL |
+| `LocalBackend(service, category_map=)` | Direct-call backend |
+| `RemoteBackend(base_url)` | HTTP backend |
+| `CompositeBackend(services, category_maps=)` | Several services combined |
 
-### executionBaseSecured メソッド
+### executionBaseSecured methods
 
-| メソッド | 説明 |
+| Method | Description |
 |----------|------|
-| `svc.buildCatalog(category_map=)` | コマンドカタログ生成 |
-| `svc.toCLI(**kwargs)` | `ServiceREPL(LocalBackend(self))` を返す |
+| `svc.buildCatalog(category_map=)` | Build the command catalog |
+| `svc.toCLI(**kwargs)` | Return `ServiceREPL(LocalBackend(self))` |
 
-### パーサ関数
+### Parser functions
 
-| 関数 | 説明 |
+| Function | Description |
 |------|------|
-| `_tokenize_kv(s)` | JSON/クォート対応トークン分割 |
-| `_strip_quotes(s)` | 外側の引用符を除去 |
-| `_coerce_value(raw, type)` | カタログ型に基づく値変換 |
-| `_parse_kv_args(args, specs)` | key=value 文字列を dict に変換 |
+| `_tokenize_kv(s)` | Token splitting aware of JSON and quotes |
+| `_strip_quotes(s)` | Remove the outer quotes |
+| `_coerce_value(raw, type)` | Convert a value according to the catalog type |
+| `_parse_kv_args(args, specs)` | Turn key=value strings into a dict |
 
-### カテゴリ優先順位
+### Category precedence
 
-`buildCatalog()` のカテゴリ解決:
+How `buildCatalog()` resolves the category:
 
-1. `@secure_expose(category="...")` デコレータ属性 (**最優先**)
-2. `category_map` 引数（デコレータなしの場合）
-3. `"other"` フォールバック
+1. The `@secure_expose(category="...")` decorator attribute (**highest priority**)
+2. The `category_map` argument (when there is no decorator)
+3. The `"other"` fallback
 
 ---
 
-## ファイル構成
+## Files
 
 ```
 pythonLibs/tool/
-  ├── ServiceREPL.py          メインフレームワーク (~680行)
+  ├── ServiceREPL.py          main framework (~680 lines)
   ├── executionBaseSecured.py buildCatalog() + toCLI()
-  ├── decorators.py           @secure_expose(category=) 追加
+  ├── decorators.py           @secure_expose(category=) added
   ├── __init__.py             re-export
   ├── __main__.py             python -m pythonLibs.tool URL
   ├── docs/
-  │   └── ServiceREPL.md      このドキュメント
+  │   └── ServiceREPL.md      this document
   ├── tests/
   │   ├── test_service_repl.py  101 tests
-  │   └── RESULTS.md           検証結果
+  │   └── RESULTS.md           verification results
   └── examples/
-      └── demo_service_repl.py  InventoryService デモ
+      └── demo_service_repl.py  InventoryService demo
 ```
 
 ---
 
-## 実行例
+## Examples
 
-### デモサービス
+### Demo service
 
 ```bash
 python3.12 pythonLibs/tool/examples/demo_service_repl.py
 python3.12 pythonLibs/tool/examples/demo_service_repl.py --extended
 ```
 
-### FiTsZ サーバに接続
+### Connect to the FiTsZ server
 
 ```bash
-# サーバ起動
+# Start the server
 python3.12 -m pythonLibs.FiTsZ.backend.server &
 
-# CLI で接続
+# Connect with the CLI
 python3.12 -m pythonLibs.tool http://localhost:8322
 ```
 
@@ -333,7 +333,7 @@ localhost:8322> createEntity name="Rocket Engine" stereotype=Block
 {"entity_id": "Block_1738...", "name": "Rocket Engine", ...}
 ```
 
-### テスト実行
+### Running the tests
 
 ```bash
 python3.12 -m pytest pythonLibs/tool/tests/test_service_repl.py -v

@@ -3,7 +3,7 @@ class JsonSanitizer:
 
     @staticmethod
     def sanitize(json_string: str, displayInfo:bool=False) -> str:
-        # 一時トークンが含まれていない場合のみ置換
+        # Replace only when the temporary token is not already in the string
         if JsonSanitizer.TEMP_TOKEN not in json_string:
             json_string = json_string.replace('""}', f'{JsonSanitizer.TEMP_TOKEN}}}')
             json_string = json_string.replace('"",', f'{JsonSanitizer.TEMP_TOKEN},')

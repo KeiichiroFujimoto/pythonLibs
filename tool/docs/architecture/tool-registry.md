@@ -1,86 +1,86 @@
 # Tool Registry Architecture
 
-## 概要
-Tool Registryは、ツール（メソッド）の自動検出、登録、検索を管理するためのアーキテクチャです。エージェントが動的にツールを選択・実行できるように設計されています。
+## Overview
+The Tool Registry is the architecture for automatically discovering, registering and looking up tools (methods). It is designed so that agents can select and run tools dynamically.
 
-## 設計原則
+## Design principles
 
-### 1. **Discovery-Driven Design（発見主導設計）**
-- モジュールやクラス内の `@secure_expose` デコレータ付きメソッドを自動検出
-- 手動登録と自動検出の両方に対応
+### 1. **Discovery-Driven Design**
+- Methods decorated with `@secure_expose` inside modules and classes are discovered automatically
+- Both manual registration and automatic discovery are supported
 
-### 2. **Registry Pattern（レジストリパターン）**
-- ツール名をキーに、ツールクラスを値として管理
-- ツールの検索・取得を一箇所で管理
+### 2. **Registry Pattern**
+- Tools are managed with the tool name as key and the tool class as value
+- Looking up and retrieving tools happens in one place
 
-### 3. **Name Resolution（名前解決）**
-- エージェントが使用する「人間が読みやすい名前」と「実際のメソッド名」のマッピング
-- エイリアス機能により、柔軟なツール名を使用可能
+### 3. **Name Resolution**
+- Maps the human-readable names agents use to the actual method names
+- Aliases allow flexible tool names
 
-## クラス構造
+## Class structure
 
-### `ToolRegistry` クラス
+### `ToolRegistry` class
 
-**主要な機能:**
+**Main features:**
 
-| メソッド | 説明 |
+| Method | Description |
 |---------|------|
-| `register(name, tool_class)` | ツールを登録 |
-| `discover_from_module(module)` | モジュール内のツールを自動検出 |
-| `get_tool(name)` | ツールクラスを取得 |
-| `list_tools(pattern)` | ツール名リストを取得（パターンマッチング対応） |
-| `invoke(name, **kwargs)` | ツールをインスタンス化して実行 |
+| `register(name, tool_class)` | Register a tool |
+| `discover_from_module(module)` | Discover the tools in a module automatically |
+| `get_tool(name)` | Get a tool class |
+| `list_tools(pattern)` | Get the list of tool names (with pattern matching) |
+| `invoke(name, **kwargs)` | Instantiate a tool and run it |
 
-## 使用例
+## Usage
 
-### 基本的な使用方法
+### Basic usage
 
 ```python
 from pythonLibs.tool.ToolRegistry import ToolRegistry
 
-# レジストリの作成
+# Create the registry
 registry = ToolRegistry()
 
-# モジュールの自動検出
+# Discover a module's tools automatically
 registry.discover_from_module(your_tool_module)
 
-# ツールの取得
+# Get a tool
 tool_class = registry.get_tool("analyze_data")
 
-# ツールのリスト
+# List tools
 available_tools = registry.list_tools("*data*")
 # -> ["analyze_data", "process_data", "extract_data"]
 ```
 
-### カスタム登録
+### Custom registration
 
 ```python
-# 既存のクラスを手動で登録
+# Register an existing class manually
 registry.register("custom_tool", CustomToolClass)
 
-# エイリアスの設定
-# CustomToolClass に @secure_alias="my_custom_tool" を付ける
-# その後、registry.get_tool("my_custom_tool") でも取得可能
+# Set an alias
+# Give CustomToolClass @secure_alias="my_custom_tool";
+# it can then also be retrieved with registry.get_tool("my_custom_tool")
 ```
 
-### パターンマッチング
+### Pattern matching
 
 ```python
-# 全てのツールを取得
+# Get all tools
 all_tools = registry.list_tools("*")
 
-# 特定の名前パターンにマッチするツールのみ取得
+# Get only the tools whose names match a pattern
 data_tools = registry.list_tools("*data*")
 io_tools = registry.list_tools("*io*")
 ```
 
-## 実装のベストプラクティス
+## Implementation best practices
 
-### 1. **モジュールの自動検出**
+### 1. **Automatic module discovery**
 
 ```python
 def discover_from_module(self, module) -> None:
-    """@secure_expose デコレータ付きのメソッドを自動検出"""
+    """Discover methods decorated with @secure_expose automatically."""
     for name in dir(module):
         if name.startswith("_"):
             continue
@@ -89,7 +89,7 @@ def discover_from_module(self, module) -> None:
             self.register(name, module)
 ```
 
-### 2. **名前解決のエラーハンドリング**
+### 2. **Error handling in name resolution**
 
 ```python
 def resolve_method_name(self, name: str) -> str:
@@ -99,7 +99,7 @@ def resolve_method_name(self, name: str) -> str:
     return actual
 ```
 
-### 3. **ツールの実行フロー**
+### 3. **Tool execution flow**
 
 ```python
 def invoke(self, method_name: str, *args, token: Optional[str] = None, **kwargs) -> Any:
@@ -110,32 +110,32 @@ def invoke(self, method_name: str, *args, token: Optional[str] = None, **kwargs)
     return method(*args, **kwargs)
 ```
 
-## 拡張性
+## Extensibility
 
-### カスタム検出ロジック
+### Custom discovery logic
 
 ```python
 def discover_from_custom_location(self, location) -> None:
-    """カスタムの場所からツールを検出"""
-    # 実装例: ファイルシステムからの検出
+    """Discover tools from a custom location."""
+    # Example: discovery from the file system
     # ...
 ```
 
-### カスタム検索フィルタ
+### Custom search filters
 
 ```python
 def list_tools_filtered(self, pattern: str, category: str = None) -> List[str]:
-    """パターンとカテゴリでフィルタリング"""
-    # 実装例: カテゴリ属性に基づいたフィルタリング
+    """Filter by pattern and category."""
+    # Example: filtering on a category attribute
     # ...
 ```
 
-## 関連するクラス
+## Related classes
 
-- `toolBaseSecured`: セキュアなツールの基底クラス
-- `ToolSecurityManager`: トークン検証とセキュリティ管理
-- `secure_expose` デコレータ: メソッドの公開宣言
+- `toolBaseSecured`: base class of secured tools
+- `ToolSecurityManager`: token validation and security management
+- `secure_expose` decorator: declares a method as exposed
 
-## 参照
+## See also
 
 - [Tool Selection Concepts](../concepts/tool-selection.md)

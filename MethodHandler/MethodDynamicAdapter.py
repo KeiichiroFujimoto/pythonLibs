@@ -8,8 +8,6 @@ import os, sys
 if not os.environ.get('NEXUS_PATH_CONFIGURED') and os.environ.get('PYTHON_PATH_PYTHONLIBS') and os.environ['PYTHON_PATH_PYTHONLIBS'] not in sys.path: sys.path.append(os.environ['PYTHON_PATH_PYTHONLIBS'])
 
 from pythonLibs.fileHandler import FilePathHandler
-# pythonLibs.webHandler は HTML レスポンス生成 (316行目) でのみ使用するため、
-# 当該経路に入った時だけ lazy import する（SDK 閉包から webHandler を外すため）。
 
 import re
 from typing import Dict, Iterable, Tuple, Optional
@@ -164,7 +162,6 @@ def convert_keys_to_quoted(input_str: str) -> str:
         key = key.strip()
         value = value.strip()
         
-        # すでにキーが引用されているかチェック
         if not (key.startswith('"') and key.endswith('"')):
             key = f'"{key}"'
         
@@ -216,7 +213,6 @@ class MethodDynamicAdapter:
                 print('WRAPPER ###################### kwargs:', kwargs)
                 print('WRAPPER ###################### accountName:'+str(accountName))
                 
-                # toolExecutorの前処理
                 toolExe = None
                 if filePathConfigToolExecutor is not None:
                     print('PREPROCESS ######################')
@@ -274,7 +270,7 @@ class MethodDynamicAdapter:
                             kwargs.update(parsed_kwargs)
                             args = args[1:]
 
-                    # dict風
+                    # Dict-like string (Python literal)
                     if parsed is None:
                         try:
                             parsed_dict = ast.literal_eval(args[0])
@@ -285,7 +281,7 @@ class MethodDynamicAdapter:
 
                 print('===================================================================5')
 
-                # dict → methodの引数にマッピング
+                # Map the dict onto the method's arguments
                 if args and isinstance(args[0], dict):
                     input_dict = args[0]
                     sig = inspect.signature(method)
@@ -301,21 +297,22 @@ class MethodDynamicAdapter:
                 
                 print('Result:'+str(result))
 
-                # HTMLレスポンス
+                # HTML file -> HTML response
                 if isinstance(result, str) and FilePathHandler.isValidFilepath(s=result):
                     if FilePathHandler.getExtension(filePath=result) == 'html':
                         if toolExe is not None:
                             toolExe.runPostprocess()
+                        # Imported here, not at module level: keeps webHandler out of the SDK import closure.
                         from pythonLibs.webHandler import FastAPIHandler  # lazy
                         return FastAPIHandler.getHTMLResponse(filePathHTML=result)
                 
-                # executionResultを含む辞書 → JSONレスポンス
+                # Dict with executionResult -> JSON response
                 if isinstance(result, dict) and "executionResult" in result:
                     if toolExe is not None:
                         toolExe.runPostprocess()
                     return JSONResponse(content={"status": "success", "result": str(result["executionResult"])})
 
-                # その他 → 通常レスポンス
+                # Anything else -> plain result
                 if toolExe is not None:
                     toolExe.runPostprocess()
                 return result

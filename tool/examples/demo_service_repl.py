@@ -32,7 +32,7 @@ _dev_root = os.path.abspath(os.path.join(_here, "..", "..", ".."))
 if _dev_root not in sys.path:
     sys.path.insert(0, _dev_root)
 
-os.environ["TOOLBASE_SECURED_ENABLED"] = "0"  # デモなので認証無効
+os.environ["TOOLBASE_SECURED_ENABLED"] = "0"  # demo: authentication disabled
 
 from pythonLibs.tool.toolBaseSecured import toolBaseSecured
 from pythonLibs.tool.decorators import secure_expose
@@ -40,7 +40,7 @@ from pythonLibs.tool.ServiceREPL import ServiceREPL, LocalBackend
 
 
 # =====================================================================
-# Step 1: toolBaseSecured サブクラスを書く (これだけが開発者の仕事)
+# Step 1: write a toolBaseSecured subclass (the only thing the developer writes)
 # =====================================================================
 class InventoryService(toolBaseSecured):
     """Example inventory management service.
@@ -59,7 +59,7 @@ class InventoryService(toolBaseSecured):
             secure_enabled=False,
             auth_handler=self._NoOpAuth(),
         )
-        # In-memory データストア
+        # In-memory data store
         self._items: dict[str, dict] = {
             "item_001": {"name": "Resistor 10kΩ", "category": "electronics", "stock": 500, "unit_price": 0.05},
             "item_002": {"name": "Capacitor 100μF", "category": "electronics", "stock": 200, "unit_price": 0.12},
@@ -69,7 +69,7 @@ class InventoryService(toolBaseSecured):
         }
         self._next_id = 6
 
-    # --- 以下、@secure_expose メソッドだけ書けばいい ---
+    # --- From here on, only @secure_expose methods are needed ---
 
     @secure_expose(alias="listItems", category="inventory")
     def list_items(self, category: str = "") -> dict:
@@ -153,7 +153,7 @@ class InventoryService(toolBaseSecured):
 
 
 # =====================================================================
-# パターン1: ゼロコスト — これだけで CLI 完成
+# Pattern 1: zero cost - this alone gives a complete CLI
 # =====================================================================
 def demo_zero_cost():
     """
@@ -169,28 +169,27 @@ def demo_zero_cost():
     svc = InventoryService()
 
     print("=" * 60)
-    print("  パターン1: ゼロコスト CLI")
-    print("  svc.toCLI().run() — 追加コード0行")
+    print("  Pattern 1: zero-cost CLI")
+    print("  svc.toCLI().run() - 0 lines of additional code")
     print("=" * 60)
     print()
-    print("  試してみてください:")
-    print("    commands               → カテゴリ別オペレーション一覧")
-    print("    describe addItem       → パラメータ名/型/必須/デフォルト")
-    print("    listItems              → 全アイテム表示")
-    print("    listItems category=thermal  → カテゴリ絞り込み")
+    print("  Try:")
+    print("    commands               -> operations by category")
+    print("    describe addItem       -> parameter names / types / required / defaults")
+    print("    listItems              -> show all items")
+    print("    listItems category=thermal  -> filter by category")
     print("    addItem name=\"LED 5mm\" category=electronics stock=100")
     print("    updateStock item_id=item_001 delta=-50")
     print("    stockReport threshold=60")
-    print("    totalValue             → 在庫総額")
-    print("    searchItems query=heat → 名前検索")
+    print("    totalValue             -> total inventory value")
+    print("    searchItems query=heat -> search by name")
     print()
 
-    # ↓ これだけ。これが全て。
     svc.toCLI(prompt="inventory> ").run()
 
 
 # =====================================================================
-# パターン3: ドメイン特化サブクラス
+# Pattern 3: domain-specific subclass
 # =====================================================================
 class InventoryREPL(ServiceREPL):
     """REPL specialized for inventory management.
@@ -207,7 +206,7 @@ class InventoryREPL(ServiceREPL):
         super().__init__(backend, prompt="inv> ")
         self._item_names: dict[str, str] = {}  # id → name
 
-    # --- Hook 1: 起動時 ---
+    # --- Hook 1: on startup ---
     def on_connect(self) -> str | None:
         self._refresh_items()
         return f"  {len(self._item_names)} items in inventory."
@@ -222,7 +221,7 @@ class InventoryREPL(ServiceREPL):
             k: v["name"] for k, v in result.get("items", {}).items()
         }
 
-    # --- Hook 2: ドメインコマンド ---
+    # --- Hook 2: domain commands ---
     def custom_commands(self) -> dict:
         return {
             "ls": self._cmd_ls,
@@ -259,7 +258,7 @@ class InventoryREPL(ServiceREPL):
             print(f"    {info['name']:<25s} stock={info['stock']}")
         print()
 
-    # --- Hook 3: Tab 補完 ---
+    # --- Hook 3: tab completion ---
     def extra_completions(self, line: str, text: str) -> list[str] | None:
         stripped = line.lstrip()
         parts = stripped.split(None, 1)
@@ -268,7 +267,7 @@ class InventoryREPL(ServiceREPL):
 
         cmd = parts[0]
 
-        # ls → カテゴリ補完
+        # ls -> complete categories
         if cmd == "ls":
             cats = set()
             result = self._backend.invoke("listItems", {})
@@ -277,9 +276,9 @@ class InventoryREPL(ServiceREPL):
             prefix = text.lower()
             return [c for c in sorted(cats) if c.lower().startswith(prefix)]
 
-        return None  # デフォルト補完にフォールスルー
+        return None  # fall through to the default completion
 
-    # --- Hook 4: 結果フォーマット ---
+    # --- Hook 4: result formatting ---
     def format_result(self, command: str, result) -> str | None:
         if command == "addItem":
             return f"  ✓ Added: {result['name']} ({result['item_id']})"
@@ -289,11 +288,11 @@ class InventoryREPL(ServiceREPL):
             return f"  ✓ Deleted: {result['name']}"
         if command == "totalValue":
             return f"  Total inventory value: ${result['total_value']:.2f} ({result['item_count']} items)"
-        return None  # その他はデフォルト JSON 表示
+        return None  # anything else: default JSON output
 
-    # --- Hook 5: 暗黙コマンド ---
+    # --- Hook 5: implicit commands ---
     def implicit_command(self, line: str) -> bool:
-        # "?" をヘルプのショートカットに
+        # "?" as a shortcut for help
         if line.strip() == "?":
             self._cmd_help("")
             return True
@@ -307,20 +306,20 @@ def demo_extended():
     repl = InventoryREPL(backend)
 
     print("=" * 60)
-    print("  パターン3: ドメイン特化 REPL")
-    print("  InventoryREPL(ServiceREPL) — フックでドメイン知識を注入")
+    print("  Pattern 3: domain-specific REPL")
+    print("  InventoryREPL(ServiceREPL) - domain knowledge injected through hooks")
     print("=" * 60)
     print()
-    print("  汎用コマンド (自動生成):")
+    print("  Generic commands (auto-generated):")
     print("    commands / describe / addItem / updateStock / ...")
     print()
-    print("  ドメインコマンド (カスタム):")
-    print("    ls [category]       → コンパクト一覧")
-    print("    low [threshold]     → 在庫不足レポート")
-    print("    ?                   → ヘルプ (暗黙コマンド)")
+    print("  Domain commands (custom):")
+    print("    ls [category]       -> compact list")
+    print("    low [threshold]     -> low-stock report")
+    print("    ?                   -> help (implicit command)")
     print()
-    print("  カスタム表示:")
-    print("    addItem → '✓ Added: ...'  (JSON ではなく人間向け)")
+    print("  Custom display:")
+    print("    addItem -> '✓ Added: ...'  (human-readable instead of JSON)")
     print()
 
     repl.run()

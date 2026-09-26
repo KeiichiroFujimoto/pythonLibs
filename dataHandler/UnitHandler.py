@@ -28,7 +28,7 @@ except Exception:
 
 _ureg = UnitRegistry()
 
-# 既存の unitName を pint が理解する形式に変換するエイリアス
+# Aliases converting existing unitName strings into forms pint understands
 _PINT_ALIASES = {
     # Temperature
     "C": "degC", "F": "degF", "R": "degR",
@@ -61,7 +61,7 @@ _PINT_ALIASES = {
     "rpm": "revolution/minute",
 }
 
-# getUnitType 用のマッピング (互換性維持)
+# Mapping for getUnitType (kept for compatibility)
 _UNIT_TYPE_MAP = {
     "DateTime": "DateTime",
     "K": "Temperature", "C": "Temperature", "F": "Temperature", "R": "Temperature",
@@ -90,7 +90,7 @@ _UNIT_TYPE_MAP = {
     "deg/s": "AngularRate", "rad/s": "AngularRate", "rpm": "AngularRate",
 }
 
-# getUnit 用のマッピング (互換性維持 — DataItem が使用)
+# Mapping for getUnit (kept for compatibility; used by DataItem)
 _UNIT_OBJ_MAP = {
     "K": Temperature.Unit.K, "C": Temperature.Unit.C, "F": Temperature.Unit.F,
     "km": Length.Unit.km, "m": Length.Unit.m, "cm": Length.Unit.cm, "mm": Length.Unit.mm,
