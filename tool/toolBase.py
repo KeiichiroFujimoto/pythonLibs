@@ -212,19 +212,6 @@ class toolBase:
   def addExecutionOutputFiles(self, file_paths=None):
     return self.setExecutionContext(output_files=file_paths)
 
-  # paramDict = { 
-  #     "documentResponse":{
-  #         "titleDocument":"Analysis Report",
-  #         "contents":[{"type":"title",    "params":["Introduction","1"]},
-  #                     {"type":"paragraph","params":["This is paragraph1."]},
-  #                     {"type":"paragraph","params":["This is paragraph2."]},
-  #                     {"type":"title",    "params":["Result and Discussions","1"]},
-  #                     {"type":"image",    "params":["./files/fujimoto/sts.jpg","sts"]},
-  #                     {"type":"image",    "params":["./files/fujimoto/f9.jpg" ,"f9"]},
-  #                     {"type":"table",    "params":["./files/fujimoto/table.xlsx","Table"]}]
-  #     }
-  # }
-
   def addDocumentResponseItem(self,key=None,value=None):
     self.paramDict["documentResponse"][key] = value
   
