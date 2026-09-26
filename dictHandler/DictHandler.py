@@ -56,12 +56,6 @@ class DictHandler():
     try:
       elemList = dpath.util.get(d,glob)
       return elemList
-      # if type(elemList) is list:
-      #   return elemList
-      # elif type(elemList) is dict:
-      #   return [elemList]
-      # else:
-      #   return elemList
     except Exception as e:
       print(f"Error: {e}")    
       return None
@@ -225,8 +219,6 @@ class DictHandler():
         elif isinstance(value, str):
             if DataItemParser.isNumericalWithUnit(value):
               valueList, unitName = DataItemParser.getValueListAndUnit(value)
-              #from pythonLibs.dictHandler import DictItem
-              #d[key] = DictItem(data=valueList, unit=unitName)
               from pythonLibs.dataHandler import DataItem
               d[key] = DataItem(dataList=valueList,unitName=unitName)
             else:
@@ -239,10 +231,6 @@ class DictHandler():
     for path1 in mapPath.keys():
         path2 = mapPath[path1]
         value = DictHandler.get(d=d2, glob=path2)
-        # if isinstance(value, DictItem.DictItem):
-        #   print('DictItem.DictItem was found type:'+str(type(value.getData())))
-        #   if isinstance(value.getData(), str):
-        #     value = value.getData()
         DictHandler.generateItem(d=d1, glob=path1, value=value)
 
   @staticmethod

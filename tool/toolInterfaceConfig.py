@@ -116,8 +116,6 @@ class toolInterfaceConfig:
     for key, value in paramDict.items():
         dataValues[key] = value
     
-    # print('dataValues:'+str(dataValues))
-    # sys.exit(0)
     
     commandPrefix = toolMap[toolName]['modulePath'] + ' opt '
     cmd           = toolConf.generateCommandString(dataValues=dataValues,commandPrefix=commandPrefix)

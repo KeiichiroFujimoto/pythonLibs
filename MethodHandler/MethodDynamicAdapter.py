@@ -212,8 +212,6 @@ class MethodDynamicAdapter:
 
             nonlocal CaseName
             try:
-                # if type(args) is tuple and len(args)==0:
-                #     args = list(kwargs.values())
                 print('WRAPPER ###################### args:', args)
                 print('WRAPPER ###################### kwargs:', kwargs)
                 print('WRAPPER ###################### accountName:'+str(accountName))
@@ -269,12 +267,6 @@ class MethodDynamicAdapter:
                     except json.JSONDecodeError:
                         pass
 
-                    # kwargs風
-                    # if parsed is None:
-                    #     parsed_kwargs = parse_kwargs_string(args[0])
-                    #     if parsed_kwargs:
-                    #         kwargs.update(parsed_kwargs)
-                    #         args = args[1:]
 
                     if parsed is None and isinstance(args[0], str) and args[0].strip().startswith("{"):
                         parsed_kwargs = parse_kwargs_string(args[0])
@@ -326,8 +318,6 @@ class MethodDynamicAdapter:
                 # その他 → 通常レスポンス
                 if toolExe is not None:
                     toolExe.runPostprocess()
-                #return {'success': True, 'result': result}
-                #return {'result': result}
                 return result
             
             except Exception as e:
@@ -346,129 +336,12 @@ class MethodDynamicAdapter:
 
         return wrapper
 
-    # @staticmethod
-    # def generateWrapper(targetClass=None, methodName: str = None, filePathConfigToolExecutor:str=None) -> Callable:
         
-    #     # Get the method from the target class
-    #     method = getattr(targetClass, methodName)
         
-    #     if not callable(method):
-    #         raise ValueError(f"{methodName} is not a callable method of {targetClass.__name__}")
 
-    #     def wrapper(*args, **kwargs):
-    #         try:
-    #             print('###################### args:'+str(args))
-    #             print('###################### type:'+str(type(args[0])))
 
-    #             if filePathConfigToolExecutor is not None:
-    #                 toolExe = targetClass.constructToolExecutorBase(filePathConfigToolExecutor=filePathConfigToolExecutor)
-    #                 toolExe.runPreprocess()
-    #             else:
-    #                 toolExe = None
                 
-    #             filePathList = []
 
-    #             # JSON文字列 → dict に変換
-    #             if args and type(args[0])==str:
-    #                 try:
-    #                     print("01")
-    #                     parsed = json.loads(args[0])
-    #                     print("01: parsed:"+str(parsed))
-    #                     if isinstance(parsed, dict):
-    #                         args = [parsed] + list(args[1:])
-    #                 except json.JSONDecodeError:
-    #                     pass
-
-    #             # dict → methodの引数にマッピング
-    #             if args and isinstance(args[0], dict):
-    #                 print("02")
-    #                 input_dict = args[0]
-    #                 sig = inspect.signature(method)
-    #                 bound_args = sig.bind_partial(**input_dict)
-    #                 bound_args.apply_defaults()
-    #                 kwargs.update(bound_args.arguments)
-    #                 args = args[1:]  # dictを除去
-
-    #             print('###################### args:'+str(args))
-
-    #             # argsが空でもkwargsがあればそのまま使える
-    #             result = method(*args, **kwargs)
-
-    #             # 以下はそのまま
-    #             if isinstance(result, str):
-    #                 if FilePathHandler.isValidFilepath(s=result):
-    #                     if FilePathHandler.getExtension(filePath=result) == 'html':
-    #                         if toolExe is not None:
-    #                             toolExe.runPostprocess()
-    #                         return FastAPIHandler.getHTMLResponse(filePathHTML=result)
-
-    #             if isinstance(result, dict) and "executionResult" in result:
-    #                 if toolExe is not None:
-    #                     toolExe.runPostprocess()
-    #                 return JSONResponse(content={"status": "success", "result": str(result["executionResult"])})
-
-    #             if toolExe is not None:
-    #                 toolExe.runPostprocess()
-    #             return {'success': True, 'result': result}
-
-    #         except Exception as e:
-    #             raise HTTPException(status_code=500, detail=str(e))
-
-        # def wrapper(*args, **kwargs):
-        #     try:
-        #         print('ARGS:'+str(args[0]))
-        #         filePathList = []
-        #         # If the first argument is a JSON string, try to convert it to a dictionary
-        #         if args and isinstance(args[0], str):
-        #             try:
-        #                 parsed = json.loads(args[0])
-        #                 print("############################### PARSED:"+str(parsed))
-        #                 if isinstance(parsed, dict):
-        #                     args = [parsed] + list(args[1:])
-        #             except json.JSONDecodeError:
-        #                 pass  # Not a valid JSON string, ignore
-
-        #         # If the first argument is a dictionary, map it to the method's parameters
-        #         if args and isinstance(args[0], dict):
-        #             input_dict = args[0]
-        #             sig = inspect.signature(method)
-        #             bound_args = sig.bind_partial(**input_dict)
-        #             bound_args.apply_defaults()
-        #             kwargs.update(bound_args.arguments)
-        #             args = args[1:]  # Remove the dict from args
-
-        #         # Call the original method with mapped arguments
-        #         result = method(*args, **kwargs)
-
-        #         # If the result is a string and a valid HTML file path, return as HTML response
-        #         if isinstance(result, str):
-        #             if FilePathHandler.isValidFilepath(s=result):
-        #                 if FilePathHandler.getExtension(filePath=result) == 'html':
-        #                     print('Return1')
-        #                     return FastAPIHandler.getHTMLResponse(filePathHTML=result)
-
-        #         # If the result is a dictionary with "executionResult", return as JSON response
-        #         if isinstance(result, dict):
-        #             if "executionResult" in result:
-        #                 print('Return2')
-        #                 return JSONResponse(content={"status": "success", "result": str(result["executionResult"])})
-
-        #         # Default JSON response
-        #         values = {'success': True, 'result': result}
-
-        #         print('Return3')
-        #         print('values:'+str(values))
-        #         #return WebFileHandler.getJsonResponse(values=values, filePathList=filePathList)
-        #         return values
-
-        #     except Exception as e:
-        #         raise HTTPException(status_code=500, detail=str(e))
-
-        # # Update the wrapper's signature to match the original method
-        # original_signature    = inspect.signature(method)
-        # parameters            = list(original_signature.parameters.values())
-        # wrapper.__signature__ = original_signature.replace(parameters=parameters)
-        # return wrapper
 
 # Test class
 class UTIL:
@@ -484,8 +357,6 @@ class UTIL:
 if __name__ == "__main__":
     func = MethodDynamicAdapter.generateWrapper(targetClass=UTIL, methodName='printText')
     
-    # Call with dictionary
-    # result = func({"text1": "hoge1", "text2": "hoge2", "valueInt1": 10})
     
     # Call with JSON string
     result = func('{"text1": "hoge1", "text2": "hoge2", "valueInt1": 10}')

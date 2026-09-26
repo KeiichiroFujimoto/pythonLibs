@@ -304,7 +304,6 @@ class TableHandler():
         with pd.ExcelWriter(filePathExcel, engine='openpyxl', mode='w') as writer:
             for i in range(len(dfList)):
                 df = dfList[i]
-                #df = df.rename(columns={'Longigude[deg]': 'Longitude[deg]'})
                 if sheetNameList != None:
                     df.to_excel(writer, sheet_name=sheetNameList[i], index=False)#, encoding='utf-8')
                 else:
@@ -403,18 +402,6 @@ class TableHandler():
             filePathExcel = fileNameBase + ".xlsx"
         df.to_excel(filePathExcel, index=index, sheet_name=fileNameBase)
 
-    # @staticmethod
-    # def getSheetNameList(fileNameExcel=None):
-    #    input_file = pd.ExcelFile(fileNameExcel)
-    #    return input_file.sheet_names
-
-    # Removed by Keiichiro Fujimoto
-    # @staticmethod
-    # def getVariableNameList(fileNameExcel=None,isheet=0):
-    #    df = pd.read_excel(fileNameExcel,header=0)
-    #    varNameList = list(df.columns)
-    #    del df
-    #    return varNameList
 
     @staticmethod
     def getMaximumForAllColumnData(tab=None):
@@ -817,7 +804,6 @@ if __name__ == '__main__':
     print(tab)
 
     # (2) Read from file
-    # tab = np.genfromtxt( "test.csv", skip_header=1, delimiter=",", dtype=[('V1', 'f8'), ('V2', 'f8'), ('V3', 'f8')] )
     tab[0][0] = 1.0
     tab[1][0] = 0.5
     tab[2][0] = 0.25

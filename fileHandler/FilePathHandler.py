@@ -48,10 +48,6 @@ class FilePathHandler:
         _, ext = os.path.splitext(normalized_path)
         return ext[1:].lower()  # remove the dot and convert to lowercase
 
-    # @staticmethod
-    # def getExtension(filePath=None):
-    #     path, ext = os.path.splitext(filePath)
-    #     return ext[1:]
     
     @staticmethod
     def replaceExtension(filePath=None,extension=None):

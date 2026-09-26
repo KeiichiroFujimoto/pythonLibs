@@ -24,7 +24,6 @@ class DataItemListTimeSequence(DataItemList):
             mdl = RegressionHandler1D_SmoothSpline()
             for i in range(self.getTotalItemNumbers()-1):
                 mdl.regModel = self.smList[i]
-                #print("timeList:"+str(timeList))
                 ypred   = mdl.predict(np.array(timeList))
                 if i==0:
                     tab = ypred

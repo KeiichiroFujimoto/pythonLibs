@@ -72,9 +72,6 @@ class DataItemList():
         else:
             df = input_file.parse(input_sheet_name[indexSheet])
 
-        #print("====Display Start=====================================")
-        #print(df)
-        #print("====Display End  =====================================")
         return df
 
     def readData(self,fnameExcelData=None,readAllSheets=False,indexSheet=None):
@@ -101,7 +98,6 @@ class DataItemList():
                 # Added by Keiichiro Fujimoto 2022/11/09                 
                 self.appendDataItemBase(name=name,unitName=unitName,formula=formula)
 
-            #self.displayData()
 
     def setConfig(self,varNameList=None,varUnitList=None,varFormulaList=None):
             numVars = len(varNameList)
@@ -179,7 +175,6 @@ class DataItemList():
             else:
                 varName = item.name
 
-            #item.displayData()
 
             df = df.rename(columns={item.name: varName})
 
@@ -240,7 +235,6 @@ class DataItemList():
         for nv in range(numVars):
             item = self.itemList[nv]
             for ii in range(len(item.dataList)):
-                #print("ii:"+str(ii)+"-nv:"+str(nv))
                 df.iat[ii,nv] = item.dataList[ii]
 
         df.to_excel(fnameExcelData,index=None)

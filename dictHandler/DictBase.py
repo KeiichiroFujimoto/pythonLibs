@@ -49,8 +49,6 @@ class DictBase(dict):
         items  = []
         for key, value in self.items():
             if isinstance(value, DictItem):
-                # data = f'"{value.getData()}"' if isinstance(value.getData(), str) else value.getData()
-                # item_str = f'"{key}": {data} {value.getUnit() if value.getUnit() else ""}'.strip()
                 #===========================================================
                 # Handling for Data
                 #===========================================================
@@ -98,8 +96,6 @@ class DictBase(dict):
                 else:
                     unit = ""
 
-                # data = f'{value.getData()}' if isinstance(value.getData(), str) else value.getData()
-                # unit = f'[{value.getUnit()}]' if value.getUnit() else ""
 
                 item_str = f'"{key}": "{data}{unit}"'
             elif isinstance(value, DictBase):

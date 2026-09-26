@@ -56,7 +56,6 @@ class MethodInspector:
         methods = {}
         # Get instance methods
         for name, method in toolInstance.__dict__.items():
-            #print('ExtractMethods-------- name1:'+str(name))
             if callable(method) and not name.startswith('_'):
                 params = {}
                 sig = inspect.signature(method)
@@ -70,7 +69,6 @@ class MethodInspector:
 
         # Get class methods
         for name, method in inspect.getmembers(toolInstance.__class__, predicate=inspect.isfunction):
-            # print('ExtractMethods-------- name2:'+str(name))
             if name.startswith("__") or name.startswith('_'):
                 continue  # Skip special methods
             if name in methods:
@@ -86,7 +84,6 @@ class MethodInspector:
                     params[param_name] = (param_type, default)
                 methods[name] = (params, True)
         
-        # print(f"Extracted methods: {methods}")  # Debugging line
         return methods
 
     @staticmethod
@@ -102,7 +99,6 @@ class MethodInspector:
                 else:
                     mapFunctions[f"{methodName}"] = method
 
-        # print(f"Map functions: {mapFunctions}")  # Debugging line
         return mapFunctions    
 
     @staticmethod
@@ -168,7 +164,6 @@ class MethodInspector:
         for dirPath in dirPathList:
             subPackage = os.path.basename(dirPath)
             for cls in MethodInspector.getClassListInDirectory(dirPath, package_root=dirPathPackageSetRoot):
-                #classNameList.append(f"{rootPackage}.{subPackage}.{cls.__module__}")
                 classNameList.append(f"{cls.__module__}")
         
         return classNameList
@@ -199,53 +194,9 @@ class MethodInspector:
                     methodNameList.append(f"{rootPackage}.{subPackage}.{cls.__module__}.{mod}")
         return methodNameList
 
-    # @staticmethod
-    # def getClassNameListOfPackageSet(dirPathPackageSetRoot=None):
-    #     from pythonLibs.fileHandler import FilePathHandler
-    #     dirPathList    = FilePathHandler.doGlobWithSortNatural(dirPathPackageSetRoot+'/*')
-    #     classNameList  = []
-    #     for dirPath in dirPathList:
-    #         for cls in MethodInspector.getClassListInDirectory(dirPath):
-    #             classNameList.append(dirPathPackageSetRoot.split('/')[-1]+'.'+dirPath.split('/')[-1]+'.'+cls.__module__)
-    #     return classNameList
 
-    # @staticmethod
-    # def getMethodNameListOfPackageSet(dirPathPackageSetRoot=None):
-    #     from pythonLibs.fileHandler import FilePathHandler
-    #     dirPathList    = FilePathHandler.doGlobWithSortNatural(dirPathPackageSetRoot+'/*')
-    #     methodNameList = []
-    #     for dirPath in dirPathList:
-    #         for cls in MethodInspector.getClassListInDirectory(dirPath):
-    #             for mod in MethodInspector.getMethodInstanceList(cls=cls):
-    #                 methodNameList.append(dirPathPackageSetRoot.split('/')[-1]+'.'+dirPath.split('/')[-1]+'.'+cls.__module__+'.'+str(mod))
-    #     return methodNameList
     
-    # @staticmethod
-    # def getClassListInDirectory(directory_path): 
-    #     class_list = [] 
-    #     # Walk through the directory 
-    #     for root, dirs, files in os.walk(directory_path): 
-    #         for file in files: # Check if the file is a Python file 
-    #             if file.endswith('.py'): 
-    #                 file_path = os.path.join(root, file) 
-    #                 module_name = os.path.splitext(file)[0] 
-    #                 try: # Import the module dynamically 
-    #                     spec   = importlib.util.spec_from_file_location(module_name, file_path) 
-    #                     module = importlib.util.module_from_spec(spec) 
 
-    #                     spec.loader.exec_module(module) # Get all classes in the module 
-
-    #                     for name, obj in inspect.getmembers(module): 
-    #                         if inspect.isclass(obj) and obj.__module__ == module.__name__: 
-    #                             class_list.append(obj) 
-    #                 except Exception as e: 
-    #                     if file != '__init__.py':
-    #                         print('========================================================================[Begin]')
-    #                         print(f"An error occurred: {e}")
-    #                         print('>>> file:'+str(file)+' directory_path:'+str(directory_path))
-    #                         print('========================================================================[End]')
-
-    #     return class_list 
 
     @staticmethod
     def getClassListInDirectory(directory_path, package_root=None):
@@ -291,12 +242,8 @@ class MethodInspector:
 
                     except Exception as e:
                         # Log the error but continue gracefully
-                        # print(f"Warning: Could not inspect module '{module_name}' in '{file}': {e}")
                         pass
         
-        # print('directory_path:'+str(directory_path))
-        # print('package_root:'+str(package_root))
-        # print('class_list:'+str(class_list))
 
         return class_list
 

@@ -46,7 +46,6 @@ class DictItem:
       self.setData_(data=dataItem)
       self.setType(type=DataItem)
     elif type(data) is str:
-      #print('##:'+str(data))
       if DataItemParser.isBool(data):
         data = DataItemParser.getValueAsBool(data)
         self.setData_(data=data)

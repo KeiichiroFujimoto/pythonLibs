@@ -14,26 +14,8 @@ class DocstringHandler:
 
     return DocstringHandler.parseBase(docstring=docstring,functionName=function.__name__)
   
-  # @staticmethod
-  # def parseBase(docstring=None,functionName=None):
-  #   doc_dict  = {}
     
-  #   if docstring:
-  #       doc_dict['name'] = functionName
-  #       # Parse summary
-  #       summary = docstring.split('\n\n')[0].strip()
-  #       doc_dict['summary'] = summary
 
-  #       # Parse parameters and returns using regex
-  #       param_pattern = re.compile(r'(\w+)\s\((\w+)\):\s(.+)')
-  #       params_match = param_pattern.findall(docstring)
-  #       returns_match = re.search(r'Returns:\n\s*(\w+):\s(.+)', docstring)
-
-  #       doc_dict['parameters'] = [{'name': p[0], 'type': p[1], 'description': p[2].strip()} for p in params_match]
-  #       if returns_match:
-  #           doc_dict['returns'] = {'type': returns_match.group(1), 'description': returns_match.group(2).strip()}
-
-  #   return doc_dict
 
   @staticmethod
   def parseBase(docstring=None, functionName=None):

@@ -109,33 +109,6 @@ class toolBase:
         markdown += f"| Kwargs      | `{details.get('kwargs')}`             |\n"
         markdown += f"| Result      | `{details.get('result')}`             |\n"
 
-        # saved_files = details.get('filePathListSaved')
-        # if saved_files:
-        #     links = ", ".join([f"[{file}" for file in saved_files])
-        #     markdown += f"| Saved Files | {links} |\n"
-        # else:
-        #     markdown += "| Saved Files | `None`                                |\n"
-
-        # markdown += "\n"
-
-        # Embed images and render tables
-        # if saved_files:
-        #     for file in saved_files:
-        #         if file.endswith(".png") or file.endswith(".jpg") or file.endswith(".jpeg") or file.endswith(".bmp"):
-        #             print("############################### file:"+str(file))
-        #             markdown += "![title](" + file + ")" + "\n\n"
-        #         elif file.endswith(".csv") and os.path.exists(file):
-        #             try:
-        #                 df = pd.read_csv(file)
-        #                 markdown += df.to_markdown(index=False) + "\n\n"
-        #             except Exception as e:
-        #                 markdown += f"**Error reading table**: {e}\n\n"
-        #         elif (file.endswith(".xlsx") or file.endswith(".xls")) and os.path.exists(file):
-        #             try:
-        #                 df = pd.read_excel(file)
-        #                 markdown += df.to_markdown(index=False) + "\n\n"
-        #             except Exception as e:
-        #                 markdown += f"**Error reading table**: {e}\n\n"
 
     return markdown
 
@@ -386,7 +359,6 @@ class toolBase:
     json_str = json.dumps(self.paramDict, default=str).replace("'", '"')
     dictRaw  = json.loads(json_str)
     return dictRaw
-    #return json.loads(str(self.paramDict).replace("'", '"'))
 
   @staticmethod
   def getDictBaseFromDict(d=None):
@@ -409,53 +381,23 @@ class toolBase:
   def readParameterFromToml(self, filePathToml=None, displayInfo=False):
     paramDict = DictBaseHandler.readFromToml(filePathToml=filePathToml, displayInfo=displayInfo)
     self.setParameterDict(paramDict=paramDict)
-    # paramDict   = DictHandler.readFromToml(filePathToml=filePathToml)
-    # paramDict   = DictHandler.cast_strings_to_numbers(paramDict)
-    # self.setParameterDict(paramDict=toolBase.getDictBaseFromDict(d=paramDict))
-    # if displayInfo:
-    #   print('====================================================== [After by TOML]')
-    #   print(str(self.paramDict))
-    #   print('===============================================================')
 
   def writeParameterAsToml(self, filePathToml=None):
     DictBaseHandler.writeAsToml(dictBase=self.paramDict,filePathToml=filePathToml)
-    # with open(filePathToml, 'w') as f:
-    #   toml.dump(DictItemEncoderToml.encode(self.paramDict.toDict()), f)
 
   def readParameterFromJson(self, filePathJson=None, displayInfo=False):
     paramDict = DictBaseHandler.readFromJson(filePathJson=filePathJson, displayInfo=displayInfo)
     self.setParameterDict(paramDict=paramDict)
-    # paramDict   = DictHandler.readFromJson(filePathJson=filePathJson)
-    # paramDict   = DictHandler.cast_strings_to_numbers(paramDict)
-    # self.setParameterDict(paramDict=toolBase.getDictBaseFromDict(d=paramDict))
-    # if displayInfo:
-    #   print('====================================================== [After by JSON]')
-    #   print(str(self.paramDict))
-    #   print('===============================================================')
   
   def writeParameterAsJson(self, filePathJson=None):
     DictBaseHandler.writeAsJson(dictBase=self.paramDict, filePathJson=filePathJson)
-    # with open(filePathJson, 'w') as f:
-    #   json.dump(self.paramDict.toDict(), f, indent=2, cls=DictItemEncoderJson) 
   
   def readParameterFromXml(self, filePathXml=None, displayInfo=False):
     paramDict = DictBaseHandler.readFromXml(filePathXml=filePathXml, displayInfo=displayInfo)
     self.setParameterDict(paramDict=paramDict)
-    # paramDict_loc = DictHandler.readFromXml(filePathXml=filePathXml)
-    # paramDict_loc = paramDict_loc[list(paramDict_loc.keys())[0]]
-    # paramDict_loc = DictHandler.cast_strings_to_numbers(paramDict_loc)
-    # self.setParameterDict(paramDict=toolBase.getDictBaseFromDict(d=paramDict_loc))
-    # if displayInfo:
-    #   print('====================================================== [After by XML]')
-    #   print(str(self.paramDict))
-    #   print('===============================================================')
   
   def writeParameterAsXml(self, filePathXml=None, rootElemName='root'):
     DictBaseHandler.writeAsXml(dictBase=self.paramDict, filePathXml=filePathXml, rootElemName=rootElemName)
-    # d = self.getDictRaw()
-    # print(str(d))
-    # d = {rootElemName:d}
-    # DictHandler.writeAsXml(d=d, filePathXml=filePathXml)
 
   @staticmethod
   def isList(value):

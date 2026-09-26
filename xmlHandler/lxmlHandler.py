@@ -54,12 +54,6 @@ class LxmlHandler():
             print(f"Unexpected Error: {e}")
             return None
 
-    # @staticmethod
-    # def getTreeFromXmlString(xmlStr=None):
-    #     from lxml import etree
-    #     root = etree.fromstring(xmlStr)
-    #     tree = etree.ElementTree(root)
-    #     return tree
 
     @staticmethod
     def getXmlAsDictionary(tree=None, encoding='utf-8'):
