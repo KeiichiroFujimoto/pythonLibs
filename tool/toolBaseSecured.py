@@ -157,12 +157,15 @@ class toolBaseSecured(toolBase):
 
     # ---------- Public API: tokens & username ----------
     def set_access_token(self, token: Optional[str]) -> None:
+        """Set the access token used for calls that do not pass their own ``token=``."""
         self._security.set_token(token)
 
     def enable_security(self) -> None:
+        """Turn token verification on for all exposed methods."""
         self._security.enable()
 
     def disable_security(self) -> None:
+        """Turn token verification off (local use, tests)."""
         self._security.disable()
 
     def set_username(self, username: Optional[str]) -> None:
@@ -182,9 +185,11 @@ class toolBaseSecured(toolBase):
         return re.sub(r"[^A-Za-z0-9_.-]", "_", s)
 
     def set_workdir_root(self, root: str) -> None:
+        """Set the root directory of the per-user work directories (see get_user_workdir)."""
         self._workdir_root = root
 
     def get_workdir_root(self) -> str:
+        """Return the root directory of the per-user work directories."""
         return self._workdir_root
 
     def get_user_workdir(self, case_name: Optional[str] = None, create: bool = True) -> str:
@@ -203,6 +208,11 @@ class toolBaseSecured(toolBase):
 
     # ---------- Discovery & dispatch ----------
     def list_exposed_methods(self, pattern: Optional[str] = None) -> list[str]:
+        """Return the sorted names of the exposed methods.
+
+        Args:
+            pattern (str): Optional shell-style filter, e.g. ``"get*"``.
+        """
         if not hasattr(self, "_exposed_methods"):
             return []
         items = sorted(self._exposed_methods)
@@ -211,12 +221,38 @@ class toolBaseSecured(toolBase):
         return items
 
     def resolve_method_name(self, name: str) -> str:
+        """Map an alias or method name to the exposed method name.
+
+        Raises:
+            AttributeError: the name is neither an exposed method nor an alias of one.
+        """
         actual = self.EXPOSE_ALIASES.get(name, name)
         if not hasattr(self, "_exposed_methods") or actual not in self._exposed_methods:
             raise AttributeError(f"method '{name}' is not exposed")
         return actual
 
     def invoke(self, method_name: str, *args, token: Optional[str] = None, **kwargs) -> Any:
+        """Call an exposed method by name or ``@secure_expose`` alias.
+
+        The call goes through the same checks as every other interface: the token is
+        verified when security is enabled, required roles are checked when enforced, and
+        camelCase / snake_case keyword names are matched to the method signature. The
+        result is stored in ``paramDict["executionResult"][methodName]`` together with the
+        arguments, and recorded as a job when a ToolTrace is attached. Exceptions are
+        recorded and re-raised.
+
+        Args:
+            method_name (str): Method name or alias, e.g. ``"tipDeflection"``.
+            token (str): Access token for this call; defaults to the instance token.
+
+        Returns:
+            Whatever the method returns.
+
+        Raises:
+            AttributeError: the name is not exposed.
+            SecurityVerificationError: security is enabled and the token is missing or rejected.
+            PermissionError: role enforcement is on and the actor lacks a required role.
+        """
         actual = self.resolve_method_name(method_name)
         if token is not None:
             kwargs.setdefault("token", token)
@@ -367,6 +403,7 @@ class toolBaseSecured(toolBase):
         return result
 
     def refresh_exposed(self) -> None:
+        """Re-scan the class for exposed methods, e.g. after adding methods at runtime."""
         self._wrap_methods()
 
     # ---------- Internal: wrapping policy ----------
@@ -712,6 +749,7 @@ class toolBaseSecured(toolBase):
 
     # ---- Execution flow (adds light-weight audit info) ----
     def execute(self):
+        """Run the classic ``functionList`` pipeline after verifying the token; records the executing user."""
         # Early verification before executing functionList (unless globally disabled)
         try:
             self._security.verify_or_raise()

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pythonlibs-toolbase"
 version = "0.1.0"
-description = "Public-domain extraction of the pythonLibs toolBase automation layer."
+description = "Dependency-light foundation for engineering tools: toolBase command services, numpy-only regression / surrogate models and conservative field mapping."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Unlicense" }

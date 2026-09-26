@@ -102,6 +102,7 @@ class Quadrature:
     interp: SparseMatrix
 
     def integrate(self, nodal) -> float:
+        """Integral over the mesh of a field given at the points (interpolated with the shape functions)."""
         return float(self.weight @ (self.interp @ np.asarray(nodal, dtype=float)))
 
     def cellIntegrals(self, values, nCells: int) -> np.ndarray:
@@ -172,6 +173,7 @@ class UnstructuredMesh:
 
     @classmethod
     def merge(cls, meshes: Sequence["UnstructuredMesh"]) -> "UnstructuredMesh":
+        """Concatenate meshes into one (points are not merged; point and cell indices are shifted)."""
         pts, types, conn, offs, poly = [], [], [], [0], {}
         pShift = cShift = 0
         for m in meshes:
@@ -192,19 +194,24 @@ class UnstructuredMesh:
     # ------------------------------------------------------------------ basic access
     @property
     def nPoints(self) -> int:
+        """Number of points."""
         return self.points.shape[0]
 
     @property
     def nCells(self) -> int:
+        """Number of cells."""
         return self.cellTypes.size
 
     def cell(self, c: int) -> np.ndarray:
+        """Point indices of cell ``c`` in VTK order."""
         return self.connectivity[self.offsets[c]:self.offsets[c + 1]]
 
     def cellSizes(self) -> np.ndarray:
+        """Number of points of every cell."""
         return np.diff(self.offsets)
 
     def cellDimensions(self) -> np.ndarray:
+        """Topological dimension (1, 2 or 3) of every cell."""
         dims = {int(t): cellDimension(int(t)) for t in np.unique(self.cellTypes)}
         return np.array([dims[int(t)] for t in self.cellTypes], dtype=int)
 

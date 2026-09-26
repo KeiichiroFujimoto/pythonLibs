@@ -45,6 +45,7 @@ class FitMetrics:
 
     @classmethod
     def compute(cls, y, yHat, nParams: float, weights=None) -> "FitMetrics":
+        """Metrics of one output from observations ``y``, fitted values ``yHat`` and the (effective) parameter count."""
         y = np.asarray(y, dtype=float)
         yHat = np.asarray(yHat, dtype=float)
         n = y.size
@@ -76,8 +77,10 @@ class FitMetrics:
                    aic=float(aic), aicc=float(aicc), bic=float(bic))
 
     def toDict(self) -> dict:
+        """All metrics as a plain dict."""
         return asdict(self)
 
     @classmethod
     def fromDict(cls, d: dict) -> "FitMetrics":
+        """Rebuild from ``toDict`` output (extra keys are ignored)."""
         return cls(**{k: d[k] for k in cls.__dataclass_fields__})

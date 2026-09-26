@@ -54,6 +54,7 @@ class FitResult:
 
     @property
     def tValues(self) -> np.ndarray:
+        """(p, ny) estimate / standard error; NaN where the standard error is undefined."""
         se = self.stdErrors
         with np.errstate(divide="ignore", invalid="ignore"):
             # An undefined (NaN) standard error gives an undefined t, not +-inf.
@@ -62,6 +63,7 @@ class FitResult:
 
     @property
     def pValues(self) -> np.ndarray:
+        """(p, ny) two-sided p-values of H0: parameter = 0 (Student t with dofResid, normal if infinite)."""
         t = np.abs(self.tValues)
         dist = self._dist()
         out = np.zeros_like(t)
@@ -77,11 +79,13 @@ class FitResult:
         return self.params - q * se, self.params + q * se
 
     def correlation(self, output: int = 0) -> np.ndarray:
+        """(p, p) correlation matrix of the estimates of one output."""
         c = self.covariance[output]
         s = np.sqrt(np.maximum(np.diag(c), 1e-300))
         return c / np.outer(s, s)
 
     def table(self, output: int = 0, level: float = 0.95) -> list[dict]:
+        """Coefficient table of one output: name, estimate, stdError, tValue, pValue and interval bounds."""
         lo, hi = self.confInt(level)
         se, t, p = self.stdErrors, self.tValues, self.pValues
         return [{"name": n, "estimate": float(self.params[i, output]), "stdError": float(se[i, output]),
@@ -90,6 +94,7 @@ class FitResult:
                 for i, n in enumerate(self.parameterNames)]
 
     def summary(self, output: Optional[int] = None, level: float = 0.95) -> str:
+        """Printable coefficient table for one output or all outputs (``output=None``)."""
         outputs = range(self.params.shape[1]) if output is None else [output]
         lines = []
         pct = f"{level * 100:g}%"
@@ -107,12 +112,14 @@ class FitResult:
         return "\n".join(lines).rstrip()
 
     def toDict(self) -> dict:
+        """JSON-ready dict; ``fromDict`` restores it."""
         return {"parameterNames": list(self.parameterNames), "params": self.params.tolist(),
                 "covariance": self.covariance.tolist(), "dofResid": float(self.dofResid),
                 "sigma2": self.sigma2.tolist(), "outputNames": list(self.outputNames)}
 
     @classmethod
     def fromDict(cls, d: dict) -> "FitResult":
+        """Rebuild a FitResult written by ``toDict``."""
         return cls(parameterNames=d["parameterNames"], params=np.array(d["params"]),
                    covariance=np.array(d["covariance"]), dofResid=float(d["dofResid"]),
                    sigma2=np.array(d["sigma2"]), outputNames=d.get("outputNames", []))

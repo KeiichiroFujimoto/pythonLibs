@@ -1,5 +1,10 @@
 # fieldMapping
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/images/fieldMapping-dark.svg">
+  <img alt="Heat flux on a fine triangle mesh mapped onto a coarse quad mesh; incoming and outgoing heat match to round-off" src="../docs/images/fieldMapping-light.svg">
+</picture>
+
 Conservative transfer of field data between non-matching meshes, built on numpy and
 the Python standard library only.
 

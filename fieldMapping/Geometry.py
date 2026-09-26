@@ -250,6 +250,7 @@ class SurfaceLocator:
 
     @classmethod
     def fromMesh(cls, mesh, cells=None) -> "SurfaceLocator":
+        """Locator on the triangulated surface cells of ``mesh`` (optionally only ``cells``)."""
         tri, par = mesh.triangulate()
         if cells is not None:
             sel = np.zeros(mesh.nCells, dtype=bool)
@@ -287,6 +288,7 @@ class SurfaceLocator:
         return dist, cp, tid, bary
 
     def normals(self, tid: np.ndarray) -> np.ndarray:
+        """Unit normals of the triangles ``tid``."""
         t = self.tri[tid]
         n = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
         return n / np.maximum(np.linalg.norm(n, axis=1), 1e-300)[:, None]

@@ -75,12 +75,19 @@ Bye.
 
 ### 2. Connect to a remote server (standalone CLI)
 
+Any server that speaks the two-endpoint protocol (`GET /api/commands`,
+`POST /api/commands/invoke`) works; `tool/examples/restServer.py` is a complete
+FastAPI example.
+
 ```bash
-# Connect to the FiTsZ server (port 8322)
+# Serve the example service (needs the "rest" extra)
+python3.12 -m pythonLibs.tool.examples.restServer &
+
+# Connect to it (port 8322)
 python3.12 -m pythonLibs.tool http://localhost:8322
 
 # Customize the prompt
-python3.12 -m pythonLibs.tool http://localhost:8322 --prompt "fitsz> "
+python3.12 -m pythonLibs.tool http://localhost:8322 --prompt "beam> "
 ```
 
 ### 3. Combine several services
@@ -302,39 +309,29 @@ python3.12 pythonLibs/tool/examples/demo_service_repl.py
 python3.12 pythonLibs/tool/examples/demo_service_repl.py --extended
 ```
 
-### Connect to the FiTsZ server
+### Connect to a REST server
 
 ```bash
-# Start the server
-python3.12 -m pythonLibs.FiTsZ.backend.server &
+# Start the example server (FastAPI, see tool/examples/restServer.py)
+python3.12 -m pythonLibs.tool.examples.restServer &
 
 # Connect with the CLI
 python3.12 -m pythonLibs.tool http://localhost:8322
 ```
 
 ```
-localhost:8322> commands entity
-  [entity] (7 commands)
-    createEntity                   Create a new entity  (1/4 params)
-    deleteEntity                   Delete an entity     (1/1 params)
-    ...
+localhost:8322> commands
+  [structures] (1 commands)
+    tipDeflection                  Tip deflection of a cantilever beam under an end load.  (2/4 params)
 
-localhost:8322> describe createEntity
-  createEntity  [entity]
-  Create a new entity
-
-  Parameters:
-    * name                 string
-      stereotype           string   = Block
-      parent_id            string
-      position             object
-
-localhost:8322> createEntity name="Rocket Engine" stereotype=Block
-{"entity_id": "Block_1738...", "name": "Rocket Engine", ...}
+localhost:8322> tipDeflection load=1000 length=2
+{
+  "deflectionM": 0.0016666666666666668
+}
 ```
 
 ### Running the tests
 
 ```bash
-python3.12 -m pytest pythonLibs/tool/tests/test_service_repl.py -v
+python3.12 -m pytest tests -v
 ```

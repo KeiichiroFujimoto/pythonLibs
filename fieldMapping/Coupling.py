@@ -20,6 +20,13 @@ import numpy as np
 
 @dataclass
 class FixedPointRelaxation:
+    """Relaxed fixed-point update of an interface unknown between two solvers.
+
+    Example::
+
+        relax = FixedPointRelaxation(omega=0.5, aitken=True, tolerance=1.0)
+        x, done = relax.update(x, F(x))     # repeat until done; residuals in relax.history
+    """
     omega: float = 0.5                    # first (or constant) relaxation factor
     aitken: bool = True
     omegaMin: float = 0.05

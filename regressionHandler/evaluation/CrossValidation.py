@@ -76,6 +76,7 @@ class CvResult:
         return f.std(axis=0, ddof=1) / np.sqrt(f.shape[0])
 
     def toDict(self) -> dict:
+        """Pooled statistics and fold RMSEs as JSON-ready values (predictions and residuals are left out)."""
         return {"rmse": self.rmse.tolist(), "mae": self.mae.tolist(), "maxAbsError": self.maxAbsError.tolist(),
                 "q2": self.q2.tolist(), "foldRmse": self.foldRmse.tolist(),
                 "rmseStdError": self.rmseStdError.tolist(), "nFolds": self.nFolds, "method": self.method,

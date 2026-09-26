@@ -28,6 +28,13 @@ class Registry:
         self._classes: Dict[str, Type] = {}
 
     def register(self, name: str) -> Callable[[Type], Type]:
+        """Class decorator registering the class under ``name`` (sets ``cls.registryName``).
+
+        Example::
+
+            @registry("model").register("myModel")
+            class MyModel(SurrogateModelBase): ...
+        """
         def decorator(cls: Type) -> Type:
             if name in self._classes and self._classes[name] is not cls:
                 raise ValueError(f"{self.kind} {name!r} is already registered to {self._classes[name].__name__}")
@@ -37,18 +44,21 @@ class Registry:
         return decorator
 
     def get(self, name: str) -> Type:
+        """Class registered as ``name``; the KeyError lists the available names."""
         try:
             return self._classes[name]
         except KeyError:
             raise KeyError(f"unknown {self.kind} {name!r}; available: {', '.join(self.names())}") from None
 
     def names(self) -> list[str]:
+        """Sorted registered names."""
         return sorted(self._classes)
 
     def __contains__(self, name: str) -> bool:
         return name in self._classes
 
     def items(self):
+        """Sorted ``(name, class)`` pairs."""
         return sorted(self._classes.items())
 
 
@@ -58,6 +68,7 @@ REGISTRIES: Dict[str, Registry] = {
 
 
 def registry(kind: str) -> Registry:
+    """Registry of one kind: "model", "basis", "solver", "kernel" or "transform"."""
     return REGISTRIES[kind]
 
 
@@ -86,6 +97,7 @@ class ComponentBase:
         pass
 
     def toDict(self) -> dict:
+        """``{"type": name, **options}`` plus fitted state under ``"_state"``; accepted by buildComponent."""
         d = {"type": self.registryName, **_optionsToDict(self.options.toDict())}
         state = self._stateToDict()
         if state:
@@ -94,6 +106,7 @@ class ComponentBase:
 
     @classmethod
     def fromDict(cls, d: dict) -> "ComponentBase":
+        """Rebuild a component (options and fitted state) written by ``toDict``."""
         d = dict(d)
         d.pop("type", None)
         state = d.pop("_state", None)
@@ -103,6 +116,7 @@ class ComponentBase:
         return obj
 
     def copyUnfitted(self) -> "ComponentBase":
+        """New instance with the same options and no fitted state."""
         return type(self)(**copy.deepcopy(self.options.toDict()))
 
     def __repr__(self) -> str:

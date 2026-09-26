@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="516" viewBox="0 0 1000 516" role="img" aria-label="toolBase overview">
+<title>toolBase overview</title>
+<rect x="0.5" y="0.5" width="999" height="515" rx="12" fill="#fcfcfb" stroke="#e1e0d9"/>
+<text x="32.0" y="50.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="24" fill="#0b0b0b" font-weight="600" text-anchor="start" xml:space="preserve" >toolBase — write a method once, use it everywhere</text>
+<text x="32.0" y="76.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="15" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >Decorate a method with @secure_expose; the same operation is exposed on six interfaces.</text>
+<rect x="32" y="104" width="376" height="334" rx="8" fill="#f3f2ee"/>
+<text x="50.0" y="132.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="11" fill="#898781" font-weight="600" text-anchor="start" xml:space="preserve" letter-spacing="1.2">YOUR CODE</text>
+<text x="50.0" y="164.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#0b0b0b" font-weight="normal" text-anchor="start" xml:space="preserve" >class BeamService(toolBaseSecured):</text>
+<text x="50.0" y="184.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#0b0b0b" font-weight="normal" text-anchor="start" xml:space="preserve" ></text>
+<text x="50.0" y="204.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#2a78d6" font-weight="normal" text-anchor="start" xml:space="preserve" >    @secure_expose(alias=&quot;tipDeflection&quot;,</text>
+<text x="50.0" y="224.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#2a78d6" font-weight="normal" text-anchor="start" xml:space="preserve" >                   category=&quot;structures&quot;)</text>
+<text x="50.0" y="244.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#0b0b0b" font-weight="normal" text-anchor="start" xml:space="preserve" >    def tip_deflection(self, load: float,</text>
+<text x="50.0" y="264.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#0b0b0b" font-weight="normal" text-anchor="start" xml:space="preserve" >                       length: float) -&gt; dict:</text>
+<text x="50.0" y="284.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >        &quot;&quot;&quot;Tip deflection of a cantilever.</text>
+<text x="50.0" y="304.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#0b0b0b" font-weight="normal" text-anchor="start" xml:space="preserve" ></text>
+<text x="50.0" y="324.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >        Args:</text>
+<text x="50.0" y="344.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >            load (float): End load [N].</text>
+<text x="50.0" y="364.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >            length (float): Beam length [m].</text>
+<text x="50.0" y="384.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >        &quot;&quot;&quot;</text>
+<text x="50.0" y="404.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12.5" fill="#0b0b0b" font-weight="normal" text-anchor="start" xml:space="preserve" >        return {&quot;deflectionM&quot;: ...}</text>
+<path d="M408,271.0 C444,271.0 426,129.0 456,129.0" fill="none" stroke="#2a78d6" stroke-width="1.5" opacity="0.7"/>
+<circle cx="458" cy="129.0" r="3" fill="#2a78d6"/>
+<rect x="462" y="104" width="506" height="50" rx="8" fill="none" stroke="#e1e0d9"/>
+<text x="476.0" y="124.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" fill="#0b0b0b" font-weight="600" text-anchor="start" xml:space="preserve" >Python call</text>
+<text x="608.0" y="124.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#2a78d6" font-weight="normal" text-anchor="start" xml:space="preserve" >svc.invoke(&quot;tipDeflection&quot;, load=1e3, length=2)</text>
+<text x="608.0" y="143.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >→ {&quot;deflectionM&quot;: 0.001667}</text>
+<path d="M408,271.0 C444,271.0 426,186.0 456,186.0" fill="none" stroke="#2a78d6" stroke-width="1.5" opacity="0.7"/>
+<circle cx="458" cy="186.0" r="3" fill="#2a78d6"/>
+<rect x="462" y="161" width="506" height="50" rx="8" fill="none" stroke="#e1e0d9"/>
+<text x="476.0" y="181.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" fill="#0b0b0b" font-weight="600" text-anchor="start" xml:space="preserve" >Catalog · REST</text>
+<text x="608.0" y="181.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#2a78d6" font-weight="normal" text-anchor="start" xml:space="preserve" >svc.buildCatalog()   GET /api/commands</text>
+<text x="608.0" y="200.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >→ 2 typed params with their descriptions</text>
+<path d="M408,271.0 C444,271.0 426,243.0 456,243.0" fill="none" stroke="#2a78d6" stroke-width="1.5" opacity="0.7"/>
+<circle cx="458" cy="243.0" r="3" fill="#2a78d6"/>
+<rect x="462" y="218" width="506" height="50" rx="8" fill="none" stroke="#e1e0d9"/>
+<text x="476.0" y="238.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" fill="#0b0b0b" font-weight="600" text-anchor="start" xml:space="preserve" >Interactive CLI</text>
+<text x="608.0" y="238.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#2a78d6" font-weight="normal" text-anchor="start" xml:space="preserve" >svc.toCLI().run()</text>
+<text x="608.0" y="257.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >service&gt; tipDeflection load=1000 length=2</text>
+<path d="M408,271.0 C444,271.0 426,300.0 456,300.0" fill="none" stroke="#2a78d6" stroke-width="1.5" opacity="0.7"/>
+<circle cx="458" cy="300.0" r="3" fill="#2a78d6"/>
+<rect x="462" y="275" width="506" height="50" rx="8" fill="none" stroke="#e1e0d9"/>
+<text x="476.0" y="295.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" fill="#0b0b0b" font-weight="600" text-anchor="start" xml:space="preserve" >LLM agent tools</text>
+<text x="608.0" y="295.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#2a78d6" font-weight="normal" text-anchor="start" xml:space="preserve" >svc.toLangchainTools()</text>
+<text x="608.0" y="314.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >→ StructuredTool + JSON schema of the arguments</text>
+<path d="M408,271.0 C444,271.0 426,357.0 456,357.0" fill="none" stroke="#2a78d6" stroke-width="1.5" opacity="0.7"/>
+<circle cx="458" cy="357.0" r="3" fill="#2a78d6"/>
+<rect x="462" y="332" width="506" height="50" rx="8" fill="none" stroke="#e1e0d9"/>
+<text x="476.0" y="352.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" fill="#0b0b0b" font-weight="600" text-anchor="start" xml:space="preserve" >Parallel sweeps</text>
+<text x="608.0" y="352.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#2a78d6" font-weight="normal" text-anchor="start" xml:space="preserve" >svc.executeParallel(&quot;tipDeflection&quot;, cases)</text>
+<text x="608.0" y="371.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >→ one result per case, thread pool</text>
+<path d="M408,271.0 C444,271.0 426,414.0 456,414.0" fill="none" stroke="#2a78d6" stroke-width="1.5" opacity="0.7"/>
+<circle cx="458" cy="414.0" r="3" fill="#2a78d6"/>
+<rect x="462" y="389" width="506" height="50" rx="8" fill="none" stroke="#e1e0d9"/>
+<text x="476.0" y="409.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" fill="#0b0b0b" font-weight="600" text-anchor="start" xml:space="preserve" >Execution trace</text>
+<text x="608.0" y="409.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#2a78d6" font-weight="normal" text-anchor="start" xml:space="preserve" >ToolTrace().attach(svc)</text>
+<text x="608.0" y="428.0" font-family='ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' font-size="12" fill="#52514e" font-weight="normal" text-anchor="start" xml:space="preserve" >→ jobs, events, durations, errors as JSON</text>
+<text x="32.0" y="474.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="13" fill="#898781" font-weight="normal" text-anchor="start" xml:space="preserve" >Also on the same base: optional access control with your own auth handler, unit-aware arguments (@with_units), settings</text>
+<text x="32.0" y="494.0" font-family='system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif' font-size="13" fill="#898781" font-weight="normal" text-anchor="start" xml:space="preserve" >parameters, and the numpy-only regressionHandler and fieldMapping services.</text>
+</svg>

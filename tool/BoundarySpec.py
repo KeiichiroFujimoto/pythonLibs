@@ -53,6 +53,7 @@ class ActionSpec:
         return new_state
 
     def to_dict(self) -> dict[str, Any]:
+        """Return the action as a dict, leaving out empty fields."""
         d: dict[str, Any] = {"id": self.id}
         if self.description:
             d["description"] = self.description
@@ -80,6 +81,7 @@ class BoundarySpec:
     # ------ Aggregate propositions ------
     @property
     def propositions_read(self) -> set[str]:
+        """Propositions checked by any action's precondition."""
         s: set[str] = set()
         for a in self.actions:
             s |= a.propositions_read()
@@ -87,6 +89,7 @@ class BoundarySpec:
 
     @property
     def propositions_written(self) -> set[str]:
+        """Propositions changed by any action's effect."""
         s: set[str] = set()
         for a in self.actions:
             s |= a.propositions_written()
@@ -94,10 +97,12 @@ class BoundarySpec:
 
     @property
     def all_propositions(self) -> set[str]:
+        """Every proposition the service reads or writes."""
         return self.propositions_read | self.propositions_written
 
     # ------ Query helpers ------
     def actions_by_category(self) -> dict[str, list[ActionSpec]]:
+        """Group the actions by their catalog category."""
         by_cat: dict[str, list[ActionSpec]] = {}
         for a in self.actions:
             by_cat.setdefault(a.category, []).append(a)
@@ -108,6 +113,7 @@ class BoundarySpec:
         return [a for a in self.actions if a.applicable(state)]
 
     def action(self, action_id: str) -> ActionSpec | None:
+        """Return the action with this id, or None."""
         for a in self.actions:
             if a.id == action_id:
                 return a
@@ -130,6 +136,7 @@ class BoundarySpec:
         return cls(service_name=service_name, actions=actions)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return the service name, the sorted propositions and the actions as dicts."""
         return {
             "service_name": self.service_name,
             "propositions": sorted(self.all_propositions),
@@ -148,6 +155,7 @@ class WorldChunk:
     state: dict[str, Any] = field(default_factory=dict)
 
     def applicable_actions(self) -> list[ActionSpec]:
+        """Actions whose preconditions hold in the current state."""
         return self.boundary.applicable_actions(self.state)
 
     def apply_action(self, action_id: str, result: dict[str, Any] | None = None) -> bool:
@@ -159,6 +167,7 @@ class WorldChunk:
         return True
 
     def to_dict(self) -> dict[str, Any]:
+        """Return the boundary spec and a copy of the state."""
         return {
             "boundary": self.boundary.to_dict(),
             "state": dict(self.state),

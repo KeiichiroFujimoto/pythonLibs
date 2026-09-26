@@ -58,11 +58,29 @@ class PredictionInterval:
     kind: str
 
     def toDict(self) -> dict:
+        """Return the interval as JSON-ready lists."""
         return {"mean": self.mean.tolist(), "lower": self.lower.tolist(), "upper": self.upper.tolist(),
                 "std": self.std.tolist(), "level": self.level, "kind": self.kind}
 
 
 class SurrogateModelBase(ABC):
+    """Common API of every model; create models with ``createModel(name_or_spec, **options)``.
+
+    Typical use::
+
+        model = createModel("kriging").fit(x, y)        # x (n, nx), y (n,) or (n, ny)
+        model.predict(xNew)                             # (m, ny) mean prediction
+        model.predictInterval(xNew, level=0.95)         # PredictionInterval(mean, lower, upper, std, ...)
+        model.predictGradient(xNew)                     # (m, nx, ny)
+        model.summary()                                 # fit metrics and, when supported, coefficients
+        model.save("model.json"); loadModel("model.json")
+
+    ``supports`` tells which optional features a model has (analytic variances,
+    derivatives, parameter inference, joint covariance, several outputs, missing
+    outputs, weights); calls to missing features raise NotImplementedError.
+    After ``fit``: ``metrics`` (one FitMetrics per output), ``result`` (FitResult
+    with estimates and standard errors, or None).
+    """
 
     registryName: ClassVar[str] = ""
 
@@ -193,6 +211,7 @@ class SurrogateModelBase(ABC):
     # ------------------------------------------------------------------ prediction
     @property
     def isTrained(self) -> bool:
+        """True after a successful ``fit`` / ``train`` (or after loading a trained model)."""
         return self._trained
 
     def _checkTrained(self) -> None:
@@ -364,6 +383,7 @@ class SurrogateModelBase(ABC):
 
     @property
     def intervalDof(self) -> Optional[float]:
+        """Degrees of freedom of the Student-t quantiles of the intervals; None means normal quantiles."""
         if self._subModels is not None:
             dofs = [m.intervalDof for m in self._subModels]
             return None if any(d is None for d in dofs) else min(dofs)
@@ -371,6 +391,7 @@ class SurrogateModelBase(ABC):
 
     @property
     def nEffectiveParams(self):
+        """Effective number of parameters (trace of the hat matrix for linear smoothers), per output."""
         if self._subModels is not None:
             return np.array([float(np.ravel(m.nEffectiveParams)[0]) for m in self._subModels])
         return self._effectiveParams()
@@ -381,6 +402,7 @@ class SurrogateModelBase(ABC):
         return self._spawn()
 
     def describe(self) -> str:
+        """Short text ``type(option=value, ...)`` listing the options that differ from their defaults."""
         opts = ", ".join(f"{k}={_short(v)}" for k, v in self.options.nonDefault().items())
         return f"{self.registryName or type(self).__name__}({opts})"
 
@@ -400,6 +422,7 @@ class SurrogateModelBase(ABC):
             raise ValueError("this needs the training data; the model was saved without it")
 
     def summary(self) -> str:
+        """Text report: model, data size, R2 / RMSE / AICc / BIC per output and the parameter table."""
         self._checkTrained()
         lines = [f"Model: {self.describe()}", f"Training points: {self.nTrain}, inputs: {self.nx}, "
                  f"outputs: {self.ny}"]
@@ -442,6 +465,7 @@ class SurrogateModelBase(ABC):
 
     @classmethod
     def fromDict(cls, d: dict) -> "SurrogateModelBase":
+        """Rebuild a model from ``toDict()`` output; on the base class the model type is read from ``d["type"]``."""
         if d.get("encoding") == "compact":
             d = expandArrays(d)
         modelCls = registry("model").get(d["type"]) if cls is SurrogateModelBase else cls
@@ -472,6 +496,7 @@ class SurrogateModelBase(ABC):
 
     @staticmethod
     def load(filePath: str) -> "SurrogateModelBase":
+        """Load a model written by ``save`` (same as ``loadModel``)."""
         with open(filePath, "r", encoding="utf-8") as f:
             return SurrogateModelBase.fromDict(decodeNonFinite(json.load(f)))
 

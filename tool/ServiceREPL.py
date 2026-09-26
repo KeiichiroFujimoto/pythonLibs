@@ -51,9 +51,11 @@ class LocalBackend:
         self._category_map = category_map or {}
 
     def catalog(self) -> list[dict]:
+        """Return the service's command catalog (``buildCatalog``)."""
         return self._svc.buildCatalog(category_map=self._category_map)
 
     def invoke(self, command: str, params: dict) -> Any:
+        """Call ``command`` on the service with keyword ``params``."""
         return self._svc.invoke(command, **params)
 
 
@@ -74,6 +76,7 @@ class CompositeBackend:
             self._backends.append(LocalBackend(svc, category_map=cmap))
 
     def catalog(self) -> list[dict]:
+        """Return the commands of all services and remember which service owns each command."""
         merged = []
         for i, b in enumerate(self._backends):
             for cmd in b.catalog():
@@ -82,6 +85,7 @@ class CompositeBackend:
         return merged
 
     def invoke(self, command: str, params: dict) -> Any:
+        """Route ``command`` to its service; ``catalog()`` must have been called once before."""
         idx = self._dispatch.get(command)
         if idx is None:
             raise AttributeError(f"Unknown command: {command}")
@@ -107,10 +111,12 @@ class RemoteBackend:
             return json.loads(resp.read())
 
     def catalog(self) -> list[dict]:
+        """GET ``/api/commands`` and return its ``commands`` list."""
         result = self._request("GET", "/api/commands")
         return result.get("commands", [])
 
     def invoke(self, command: str, params: dict) -> Any:
+        """POST ``{"command", "params"}`` to ``/api/commands/invoke``; return ``result`` or raise on failure."""
         result = self._request("POST", "/api/commands/invoke",
                                {"command": command, "params": params})
         if not result.get("success"):
@@ -593,7 +599,7 @@ def main():
 
     Usage:
         python -m pythonLibs.tool.ServiceREPL http://localhost:8322
-        python -m pythonLibs.tool.ServiceREPL --url http://localhost:8322 --prompt "fitsz> "
+        python -m pythonLibs.tool.ServiceREPL --url http://localhost:8322 --prompt "beam> "
     """
     import argparse
 

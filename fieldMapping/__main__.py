@@ -85,6 +85,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def run(argv=None) -> dict:
+    """Execute one command-line command (``info``, ``template``, ``layered`` or ``flux``) and return its result."""
     a = _parser().parse_args(argv)
     fm = FieldMappingHandler()
     if a.command == "info":
@@ -117,6 +118,7 @@ def run(argv=None) -> dict:
 
 
 def main(argv=None) -> int:
+    """Command-line entry point: print the result as JSON; exit code 1 on input errors."""
     try:
         out = run(argv)
     except (OSError, ValueError, KeyError) as e:

@@ -14,7 +14,7 @@ This single file shows all ServiceREPL patterns.
 
 === Pattern 3: Domain-specific subclass ===
   Inherit from ServiceREPL and add domain-specific features.
-  Like EntityNetREPL, provide name resolution, custom syntax and dedicated display.
+  Provide name resolution, custom syntax and a dedicated display.
 
 Usage:
   python demo_service_repl.py              # Pattern 1 (zero cost)

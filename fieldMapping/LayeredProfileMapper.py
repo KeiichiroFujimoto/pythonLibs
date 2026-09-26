@@ -88,6 +88,7 @@ class Station:
 
     @classmethod
     def fromSpec(cls, spec) -> "Station":
+        """Station from a dict with position, time, depth, temperature, interfaces and optional name."""
         if isinstance(spec, Station):
             return spec
         return cls(spec["position"], spec["time"], spec["depth"], spec["temperature"], spec["interfaces"],
@@ -115,6 +116,7 @@ class LayeredMapResult:
     cellTemperature: Optional[np.ndarray] = None     # (nt, nCells): energy-equivalent cell values
 
     def summary(self) -> dict:
+        """Number of times, worst relative energy errors (region and nodal) and whether every step converged."""
         errs = [d["maxRelativeEnergyError"] for d in self.diagnostics]
         return {"nTimes": int(self.times.size), "maxRelativeEnergyError": float(max(errs)) if errs else 0.0,
                 "maxRelativeNodalEnergyError": float(max(d["maxRelativeNodalEnergyError"] for d in self.diagnostics))

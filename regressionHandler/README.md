@@ -1,5 +1,10 @@
 # regressionHandler
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/images/regressionHandler-dark.svg">
+  <img alt="Kriging fit of 14 noisy samples with its 95 % prediction interval, next to a list of model types and features" src="../docs/images/regressionHandler-light.svg">
+</picture>
+
 Regression and surrogate modelling, 1D to N-D, with multi-output support.
 All algorithms (special functions, distributions, optimizers, B-splines,
 kernels, solvers) are implemented here on top of numpy only.

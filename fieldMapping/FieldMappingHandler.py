@@ -119,12 +119,14 @@ class FieldMappingHandler(toolBaseSecured):
 
     # ------------------------------------------------------------------ Python accessors
     def getMesh(self, meshName: str) -> UnstructuredMesh:
+        """Mesh loaded or stored under ``meshName`` (KeyError lists the known names)."""
         try:
             return self._meshes[meshName]
         except KeyError:
             raise KeyError(f"unknown mesh {meshName!r}; available: {sorted(self._meshes)}") from None
 
     def addMesh(self, meshName: str, mesh: UnstructuredMesh) -> None:
+        """Store an in-memory mesh under ``meshName`` so the commands can use it without a file."""
         self._meshes[meshName] = mesh
 
     @staticmethod

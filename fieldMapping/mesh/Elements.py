@@ -65,6 +65,7 @@ def gaussJacobi(n: int, alpha: float) -> tuple[np.ndarray, np.ndarray]:
 # ---------------------------------------------------------------- reference quadrature
 @lru_cache(maxsize=None)
 def lineRule(order: int):
+    """Gauss-Legendre points and weights on the reference line, exact up to polynomial degree ``order``."""
     n = order // 2 + 1
     x, w = gaussLegendre(n)
     return x[:, None], w
@@ -72,6 +73,7 @@ def lineRule(order: int):
 
 @lru_cache(maxsize=None)
 def squareRule(order: int):
+    """Tensor Gauss-Legendre rule on the reference square, exact up to degree ``order`` per direction."""
     x, w = gaussLegendre(order // 2 + 1)
     a, b = np.meshgrid(x, x, indexing="ij")
     wa, wb = np.meshgrid(w, w, indexing="ij")
@@ -80,6 +82,7 @@ def squareRule(order: int):
 
 @lru_cache(maxsize=None)
 def cubeRule(order: int):
+    """Tensor Gauss-Legendre rule on the reference cube, exact up to degree ``order`` per direction."""
     x, w = gaussLegendre(order // 2 + 1)
     g = np.meshgrid(x, x, x, indexing="ij")
     gw = np.meshgrid(w, w, w, indexing="ij")
@@ -119,6 +122,7 @@ def tetraRule(order: int):
 
 @lru_cache(maxsize=None)
 def wedgeRule(order: int):
+    """Triangle rule times Gauss-Legendre line rule on the reference wedge."""
     p, w = triangleRule(order)
     z, wz = gaussLegendre(order // 2 + 1)
     pts = np.column_stack([np.repeat(p, z.size, axis=0), np.tile(z, p.shape[0])])
@@ -159,12 +163,15 @@ class Element:
         self.orientation = int(orientation)
 
     def shape(self, xi) -> np.ndarray:
+        """Shape function values (n, nNodes) at reference coordinates ``xi`` (n, dim)."""
         return self._shape(np.atleast_2d(np.asarray(xi, dtype=float)))
 
     def dshape(self, xi) -> np.ndarray:
+        """Shape function derivatives with respect to the reference coordinates at ``xi``."""
         return self._dshape(np.atleast_2d(np.asarray(xi, dtype=float)))
 
     def quadrature(self, order: int):
+        """Reference-cell quadrature ``(points, weights)`` exact up to degree ``order``."""
         return self._rule(max(int(order), 1))
 
     def __repr__(self) -> str:
@@ -504,10 +511,12 @@ def element(vtkType: int) -> Element:
 
 
 def supportedTypes() -> list[int]:
+    """VTK cell type ids this package can integrate."""
     return sorted(_ELEMENTS) + [POLYGON, POLYHEDRON, PIXEL, VOXEL]
 
 
 def cellDimension(vtkType: int) -> int:
+    """Topological dimension of a VTK cell type (1 line, 2 surface, 3 volume)."""
     t = int(vtkType)
     if t == POLYGON:
         return 2

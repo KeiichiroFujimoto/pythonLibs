@@ -115,9 +115,16 @@ class ToolTrace:
         self._chronovault_sink = chronovault_sink
 
     def set_chronovault_sink(self, sink: Optional[Any]) -> None:
+        """Set an optional sink whose ``persist_event(event)`` stores each recorded event (None to disable)."""
         self._chronovault_sink = sink
 
     def attach(self, tool: Any, name: Optional[str] = None) -> None:
+        """Record every ``invoke`` of ``tool`` in this trace from now on.
+
+        Args:
+            tool: A toolBaseSecured instance (any object whose invoke checks ``_tool_trace``).
+            name (str): Display name; defaults to ``tool.name`` or the class name.
+        """
         tool_name = name or getattr(tool, "name", None) or tool.__class__.__name__
         tool_id = id(tool)
         self._tools[tool_id] = {
@@ -128,6 +135,7 @@ class ToolTrace:
         setattr(tool, "_tool_trace_name", tool_name)
 
     def detach(self, tool: Any) -> None:
+        """Stop recording ``tool``; events recorded so far are kept."""
         tool_id = id(tool)
         if tool_id in self._tools:
             self._tools.pop(tool_id, None)
@@ -156,6 +164,12 @@ class ToolTrace:
         job_started_at: Optional[str] = None,
         job_finished_at: Optional[str] = None,
     ) -> None:
+        """Append one event (normally called by ``invoke``, not by user code).
+
+        Status is "failed" when ``error`` is given, else "completed" unless the tool reports
+        its own status. Mission / task / node ids and the execution context (working
+        directory, input / output files) are taken from the tool when available.
+        """
         tool_name = getattr(tool, "_tool_trace_name", None) or getattr(tool, "name", None) or tool.__class__.__name__
         mission_id = getattr(tool, "_tool_trace_mission_id", None)
         task_id = getattr(tool, "_tool_trace_task_id", None)
@@ -244,6 +258,7 @@ class ToolTrace:
         method_name: str,
         parent_job_id: Optional[str] = None,
     ) -> Dict[str, str]:
+        """Open a job context (job id, tool, method, start time) for a call about to run; ``record`` closes it."""
         tool_name = getattr(tool, "_tool_trace_name", None) or getattr(tool, "name", None) or tool.__class__.__name__
         self._job_counter += 1
         context = {
@@ -257,6 +272,7 @@ class ToolTrace:
         return context
 
     def snapshot_results(self) -> List[Dict[str, Any]]:
+        """Return the attached tools as ``[{name, class}]``."""
         snapshots: List[Dict[str, Any]] = []
         for info in self._tools.values():
             snapshots.append({
@@ -266,6 +282,7 @@ class ToolTrace:
         return snapshots
 
     def snapshot_jobs(self) -> List[Dict[str, Any]]:
+        """Return one summary per job: id, tool, method, status, start / finish time, duration, error."""
         jobs: Dict[str, Dict[str, Any]] = {}
         for event in self._events:
             job_id = event.get("jobId")
@@ -286,6 +303,7 @@ class ToolTrace:
         return list(jobs.values())
 
     def to_dict(self) -> Dict[str, Any]:
+        """Return the whole trace: ``session_id``, ``tools``, ``jobs``, ``events`` and ``meta``."""
         return {
             "session_id": self.session_id,
             "schemaVersion": TRACE_SCHEMA_VERSION,
@@ -296,6 +314,7 @@ class ToolTrace:
         }
 
     def to_json(self) -> str:
+        """Return ``to_dict()`` as indented JSON (non-JSON values are converted with ``str``)."""
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=2, default=str)
 
     def toRuntimeEvents(
@@ -304,7 +323,7 @@ class ToolTrace:
         runId: Optional[str] = None,
         traceId: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Convert ToolTrace events into webCore runtime-event.v1-compatible list."""
+        """Convert the events into ``runtime-event.v1`` dicts (run / session / trace ids, input, output, error)."""
         runtime_events: List[Dict[str, Any]] = []
         resolved_run_id = runId or str(self.meta.get("runId") or self.session_id)
         resolved_trace_id = traceId or str(self.meta.get("traceId") or self.session_id)
@@ -353,6 +372,7 @@ class ToolTrace:
         return runtime_events
 
     def merge_from_trace_dict(self, trace_dict: Dict[str, Any]) -> None:
+        """Append the tools and events of another trace (a ``to_dict()`` result) to this one."""
         if not trace_dict:
             return
         for tool in trace_dict.get("tools", []):
@@ -364,6 +384,7 @@ class ToolTrace:
 
     @staticmethod
     def merge_trace_dicts(traces: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Combine several ``to_dict()`` results into one dict with de-duplicated tools and all events."""
         combined = {
             "session_id": "merged",
             "tools": [],

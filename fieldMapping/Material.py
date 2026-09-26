@@ -39,14 +39,17 @@ class Material:
 
     @classmethod
     def fromSpec(cls, spec) -> "Material":
+        """Material from ``{"density", "cp", "name"?}`` (cp a number or [[T, cp], ...]); instances pass through."""
         if isinstance(spec, Material):
             return spec
         return cls(spec["density"], spec["cp"], spec.get("name", ""))
 
     def toDict(self) -> dict:
+        """``{"density", "cp" table, "name"}``, accepted by ``fromSpec``."""
         return {"density": self.density, "cp": self.table.tolist(), "name": self.name}
 
     def cp(self, temperature) -> np.ndarray:
+        """Specific heat [J/(kg K)] at ``temperature`` (piecewise linear, constant beyond the table)."""
         t = np.asarray(temperature, dtype=float)
         return np.interp(t, self.table[:, 0], self.table[:, 1])
 
@@ -75,9 +78,11 @@ class Material:
         return T
 
     def volumetricEnergy(self, temperature) -> np.ndarray:
+        """Sensible energy per unit volume rho * e(T) [J/m^3]."""
         return self.density * self.energy(temperature)
 
     def volumetricCapacity(self, temperature) -> np.ndarray:
+        """Volumetric heat capacity rho * cp(T) [J/(m^3 K)]."""
         return self.density * self.cp(temperature)
 
     def __repr__(self) -> str:

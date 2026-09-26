@@ -64,6 +64,7 @@ class SafeExpression:
 
     @staticmethod
     def availableFunctions() -> list[str]:
+        """Names of the functions an expression may call (sin, exp, log, sqrt, ...)."""
         return sorted(_FUNCTIONS)
 
     def _validate(self, node: ast.AST) -> None:
@@ -98,6 +99,7 @@ class SafeExpression:
             raise ValueError(f"syntax element {type(node).__name__} not allowed in {self.text!r}")
 
     def evaluate(self, env: Mapping[str, object]):
+        """Evaluate with values (scalars or numpy arrays) for every symbol; raises if one is missing."""
         missing = self.usedSymbols - set(env)
         if missing:
             raise ValueError(f"missing values for symbols: {sorted(missing)}")

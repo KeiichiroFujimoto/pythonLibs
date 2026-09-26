@@ -15,6 +15,12 @@ import numpy as np
 
 
 class OptionsDictionary:
+    """Named options with declared defaults and constraints; ``model.options`` of every model.
+
+    ``options["name"] = value`` validates immediately; ``describe()`` lists the
+    declarations (default, allowed values / types, range, description).
+    """
+
 
     def __init__(self) -> None:
         self._values: dict[str, Any] = {}
@@ -90,13 +96,16 @@ class OptionsDictionary:
         return iter(self._declared)
 
     def update(self, values: dict) -> None:
+        """Set several options, each validated like a single assignment."""
         for k, v in values.items():
             self[k] = v
 
     def get(self, name: str, default: Any = None) -> Any:
+        """Value of ``name``, or ``default`` if it is not declared."""
         return self._values.get(name, default)
 
     def toDict(self) -> dict:
+        """Current values of all declared options."""
         return {k: self._values[k] for k in self._declared}
 
     def nonDefault(self) -> dict:
@@ -126,6 +135,7 @@ class OptionsDictionary:
         return out
 
     def clone(self) -> "OptionsDictionary":
+        """Independent deep copy (declarations and values)."""
         return copy.deepcopy(self)
 
 
