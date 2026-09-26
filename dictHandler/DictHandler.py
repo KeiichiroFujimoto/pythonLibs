@@ -100,7 +100,10 @@ class DictHandler():
     return args
 
   @staticmethod
-  def flatten_dict(d, parent_key='', result={}):
+  def flatten_dict(d, parent_key='', result=None):
+    """Flatten nested dicts into dotted keys: {"a": {"b": 1}} -> {"a.b": 1}."""
+    if result is None:
+      result = {}
     for key, value in d.items():
         full_key = f"{parent_key}.{key}" if parent_key else key
         if isinstance(value, dict):
@@ -111,6 +114,7 @@ class DictHandler():
 
   @staticmethod
   def unflatten_dict(d):
+    """Inverse of flatten_dict: {"a.b": 1} -> {"a": {"b": 1}}."""
     result = {}
     for key, value in d.items():
         keys = key.split('.')

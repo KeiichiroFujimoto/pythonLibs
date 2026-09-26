@@ -355,14 +355,14 @@ class TableHandler():
 
     @staticmethod
     def getUnitFromColumnName(columnName=None):
-        columnName = re.split('\[', columnName)
-        unitBuff = re.split('\]', columnName[1])
+        columnName = re.split(r'\[', columnName)
+        unitBuff = re.split(r'\]', columnName[1])
         unit = unitBuff[0]
         return unit
 
     @staticmethod
     def getNameFromColumnName(columnName=None):
-        colName = re.split('\[', columnName)
+        colName = re.split(r'\[', columnName)
         name = colName[0]
         return name
 

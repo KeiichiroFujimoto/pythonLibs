@@ -7,9 +7,6 @@ class DocstringHandler:
   @staticmethod
   def parse(function):
     
-    print('_/_/_/_/_/_/_/ parse function:'+str(function))
-    print('_/_/_/_/_/_/_/ type(function):'+str(type(function)))
-    
     docstring = inspect.getdoc(function)
 
     return DocstringHandler.parseBase(docstring=docstring,functionName=function.__name__)
@@ -81,7 +78,6 @@ class DocstringHandler:
   @staticmethod
   def getDescriptionParameters(function=None):
     doc_dict    = DocstringHandler.parse(function=function)
-    print("################### doc_dict:"+str(doc_dict))
     params      = doc_dict['parameters']
     description = "Parameters:\n"
     for param in params:
