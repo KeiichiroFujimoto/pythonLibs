@@ -1,24 +1,24 @@
 #!/usr/bin/env python3.12
 """
-ServiceREPL デモ — toolBaseSecured の3つの CLI パターン
+ServiceREPL demo — three CLI patterns of toolBaseSecured
 
-このファイル1つで、ServiceREPL の全パターンを理解できます。
+This single file shows all ServiceREPL patterns.
 
-=== パターン1: ゼロコスト (svc.toCLI().run()) ===
-  開発者が toolBaseSecured サブクラスを書くだけで、CLI が自動生成される。
-  追加コード: 0行
+=== Pattern 1: Zero cost (svc.toCLI().run()) ===
+  A developer just writes a toolBaseSecured subclass and a CLI is generated automatically.
+  Additional code: 0 lines
 
-=== パターン2: スタンドアロン CLI (URL だけ) ===
+=== Pattern 2: Standalone CLI (URL only) ===
   python -m pythonLibs.tool.ServiceREPL http://localhost:8322
-  コード不要。サーバ URL を渡すだけ。
+  No code needed. Just pass the server URL.
 
-=== パターン3: ドメイン特化サブクラス ===
-  ServiceREPL を継承して、ドメイン固有の機能を追加。
-  EntityNetREPL のように名前解決、独自構文、専用表示を提供。
+=== Pattern 3: Domain-specific subclass ===
+  Inherit from ServiceREPL and add domain-specific features.
+  Like EntityNetREPL, provide name resolution, custom syntax and dedicated display.
 
 Usage:
-  python demo_service_repl.py              # パターン1 (ゼロコスト)
-  python demo_service_repl.py --extended   # パターン3 (ドメイン特化)
+  python demo_service_repl.py              # Pattern 1 (zero cost)
+  python demo_service_repl.py --extended   # Pattern 3 (domain-specific)
 """
 from __future__ import annotations
 
@@ -43,13 +43,13 @@ from pythonLibs.tool.ServiceREPL import ServiceREPL, LocalBackend
 # Step 1: toolBaseSecured サブクラスを書く (これだけが開発者の仕事)
 # =====================================================================
 class InventoryService(toolBaseSecured):
-    """在庫管理サービスの例。
+    """Example inventory management service.
 
-    @secure_expose を付けたメソッドが自動的に:
-      - Web API (buildCatalog → /api/commands)
-      - LLM Agent (toLangchainTools → StructuredTool[])
-      - CLI/REPL (toCLI → ServiceREPL)
-    の3つのインターフェースに展開される。
+    Methods decorated with @secure_expose are automatically expanded into
+      - Web API (buildCatalog -> /api/commands)
+      - LLM Agent (toLangchainTools -> StructuredTool[])
+      - CLI/REPL (toCLI -> ServiceREPL)
+    these three interfaces.
     """
 
     
@@ -157,14 +157,14 @@ class InventoryService(toolBaseSecured):
 # =====================================================================
 def demo_zero_cost():
     """
-    svc.toCLI().run() — 追加コード0行で対話的 CLI が使える。
+    svc.toCLI().run() — an interactive CLI with 0 lines of additional code.
 
-    自動生成されるコマンド:
-      commands [category]          → 全オペレーション一覧
-      describe <command>           → パラメータ詳細
-      <command> key=value ...      → 任意コマンド実行
-      help / refresh / quit        → 組み込み
-    + Tab 補完 (コマンド名 + パラメータ名)
+    Automatically generated commands:
+      commands [category]          -> list all operations
+      describe <command>           -> parameter details
+      <command> key=value ...      -> run any command
+      help / refresh / quit        -> built-ins
+    + Tab completion (command names + parameter names)
     """
     svc = InventoryService()
 
@@ -193,14 +193,14 @@ def demo_zero_cost():
 # パターン3: ドメイン特化サブクラス
 # =====================================================================
 class InventoryREPL(ServiceREPL):
-    """在庫管理に特化した REPL。
+    """REPL specialized for inventory management.
 
-    ServiceREPL の6つのフックを使ってドメイン知識を注入:
-      on_connect()         → 起動時バナー
-      custom_commands()    → ドメインコマンド (ls, low)
-      extra_completions()  → アイテム名補完
-      format_result()      → 結果の見やすい表示
-      implicit_command()   → 短縮構文
+    Injects domain knowledge using the six hooks of ServiceREPL:
+      on_connect()         -> startup banner
+      custom_commands()    -> domain commands (ls, low)
+      extra_completions()  -> item name completion
+      format_result()      -> readable result display
+      implicit_command()   -> shorthand syntax
     """
 
     def __init__(self, backend):
@@ -301,7 +301,7 @@ class InventoryREPL(ServiceREPL):
 
 
 def demo_extended():
-    """パターン3: ドメイン特化サブクラス。"""
+    """Pattern 3: domain-specific subclass."""
     svc = InventoryService()
     backend = LocalBackend(svc)
     repl = InventoryREPL(backend)

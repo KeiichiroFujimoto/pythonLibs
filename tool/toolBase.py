@@ -436,15 +436,15 @@ class toolBase:
     return variables
 
   def executeParallel(self, method_name, params_list, max_workers=None):
-    """同一メソッドを異なるパラメータで並列実行する。
+    """Run the same method in parallel with different parameters.
 
     Args:
-        method_name: 実行するメソッド名
-        params_list: パラメータ辞書のリスト [{...}, {...}, ...]
-        max_workers: 最大スレッド数 (None=自動設定)
+        method_name: Name of the method to run
+        params_list: List of parameter dicts [{...}, {...}, ...]
+        max_workers: Maximum number of threads (None=auto)
 
     Returns:
-        入力順に整列した結果リスト。失敗タスクは {"__error": str, "__traceback": str} を含む。
+        List of results ordered as the input. Failed tasks contain {"__error": str, "__traceback": str}.
     """
     from pythonLibs.tool.ToolRunner import ThreadRunner, ToolTask
     import traceback as tb

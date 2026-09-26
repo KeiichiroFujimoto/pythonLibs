@@ -462,15 +462,15 @@ class toolBaseSecured(toolBase):
 
     # ---------- Parallel execution ----------
     def executeParallel(self, method_name, params_list, max_workers=None):
-        """invoke() 経由でエイリアス解決 + セキュリティを適用した並列実行。
+        """Parallel execution via invoke(), applying alias resolution + security.
 
         Args:
-            method_name: 実行するメソッド名またはエイリアス
-            params_list: パラメータ辞書のリスト [{...}, {...}, ...]
-            max_workers: 最大スレッド数 (None=自動設定)
+            method_name: Name or alias of the method to execute
+            params_list: List of parameter dicts [{...}, {...}, ...]
+            max_workers: Maximum number of threads (None=auto)
 
         Returns:
-            入力順に整列した結果リスト。失敗タスクは {"__error": str, "__traceback": str} を含む。
+            List of results ordered as the input. Failed tasks contain {"__error": str, "__traceback": str}.
         """
         actual = self.resolve_method_name(method_name)
         return super().executeParallel(actual, params_list, max_workers=max_workers)

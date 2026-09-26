@@ -1,9 +1,9 @@
-"""units_decorator — Pint を使った関数引数の単位自動変換デコレータ。
+"""units_decorator - decorator for automatic unit conversion of function arguments using Pint.
 
 Example:
     @with_units(radius="m", thickness="mm->m", pressure="MPa->Pa")
     def evaluate(radius, thickness, pressure):
-        # radius は m のまま、thickness は m に、pressure は Pa に変換される
+        # radius stays in m, thickness is converted to m, pressure to Pa
         ...
 
     @with_units(pressure_mean="MPa->Pa", pressure_std="MPa->Pa",
@@ -11,9 +11,9 @@ Example:
     def monteCarlo(pressure_mean, pressure_std, temperature_mean, temperature_std):
         ...
 
-書式:
-    "unit"          → その単位のまま（メタデータのみ、変換なし）
-    "src->dst"      → src 単位で受け取り、dst 単位に変換して関数へ渡す
+Format:
+    "unit"          -> keep that unit (metadata only, no conversion)
+    "src->dst"      -> receive in src units, convert to dst units and pass to the function
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ except ImportError:
 
 
 def _convert(value: float, src_unit: str, dst_unit: str) -> float:
-    """Pint で単位変換。Pint が無ければ既知の固定係数で変換。"""
+    """Unit conversion with Pint. If Pint is unavailable, convert with known fixed factors."""
     if _PINT_AVAILABLE:
         q = value * _ureg(src_unit)
         return q.to(dst_unit).magnitude
@@ -65,12 +65,12 @@ def _convert(value: float, src_unit: str, dst_unit: str) -> float:
 
 
 def with_units(**unit_specs: str) -> Callable:
-    """関数引数の単位自動変換デコレータ。
+    """Decorator for automatic unit conversion of function arguments.
 
     Args:
         **unit_specs: {param_name: "unit" or "src->dst"}
-                      "m"           → メタデータのみ（変換なし）
-                      "mm->m"       → mm 入力、m 変換後に関数へ
+                      "m"           -> metadata only (no conversion)
+                      "mm->m"       -> mm input, converted to m before being passed to the function
     """
     # Parse specs
     conversions: Dict[str, tuple] = {}

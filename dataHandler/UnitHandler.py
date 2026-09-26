@@ -112,12 +112,12 @@ class UnitHandler:
 
     @staticmethod
     def getUnit(unitName):
-        """互換性維持: unitName から EngUnit オブジェクトを返す。"""
+        """Backward compatibility: return an EngUnit object from unitName."""
         return _UNIT_OBJ_MAP.get(unitName, None)
 
     @staticmethod
     def getUnitType(unitName):
-        """互換性維持: unitName から単位カテゴリ名を返す。"""
+        """Backward compatibility: return the unit category name from unitName."""
         return _UNIT_TYPE_MAP.get(unitName, None)
 
     @staticmethod
@@ -134,15 +134,15 @@ class UnitHandler:
 
     @staticmethod
     def convertUnit(value=None, unitNameIn: str = None, unitNameOut: str = None):
-        """pint をバックエンドにした単位変換。
+        """Unit conversion with pint as the backend.
 
         Args:
-            value: 変換対象の値 (scalar, list, pandas Series, str)
-            unitNameIn: 変換元の単位名
-            unitNameOut: 変換先の単位名
+            value: Value to convert (scalar, list, pandas Series, str)
+            unitNameIn: Source unit name
+            unitNameOut: Target unit name
 
         Returns:
-            変換後の値
+            Converted value
         """
         if unitNameIn == unitNameOut:
             return value
@@ -167,14 +167,14 @@ class UnitHandler:
 
     @staticmethod
     def convertUnitForList(valueList=None, unitNameIn=None, unitNameOut=None):
-        """リストの全要素を単位変換する。"""
+        """Convert the units of all elements of a list."""
         pintIn = _PINT_ALIASES.get(unitNameIn, unitNameIn)
         pintOut = _PINT_ALIASES.get(unitNameOut, unitNameOut)
         return [UnitHandler._convertScalar(v, pintIn, pintOut) for v in valueList]
 
     @staticmethod
     def _convertScalar(value, pintUnitIn, pintUnitOut):
-        """スカラー値を pint で変換する。"""
+        """Convert a scalar value with pint."""
         q = _ureg.Quantity(value, pintUnitIn)
         result = q.to(pintUnitOut).magnitude
         if isinstance(result, float) and result.is_integer() and isinstance(value, int):

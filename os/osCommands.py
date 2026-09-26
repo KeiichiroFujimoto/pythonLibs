@@ -233,9 +233,9 @@ class osCommands:
 
         Notes
         -----
-        - Windows, macOS, Linux で動作。
-        - `force=True` は中身があっても削除（要注意）。安全運用では `only_if_empty=True`
-          と組み合わせて使用してください。
+        - Works on Windows, macOS, Linux.
+        - `force=True` deletes even if there is content (use with care). For safe operation, use it
+          together with `only_if_empty=True`.
         """
         tgt = Path(target)
         if not tgt.exists():
